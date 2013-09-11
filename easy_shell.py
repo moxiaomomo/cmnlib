@@ -1,4 +1,5 @@
 import os
+import paramiko
 
 '''
 created by moxiaomomo(moxiaomomo@gmail.com)
@@ -49,3 +50,29 @@ def split_file_by_row(filepath, new_filepath, row_cnt, suffix_type='-d', min_fil
         os.system(command)
         filelist = [new_filepath+fn for fn in filelist]
         return  filelist
+		
+# secure copy data with password 
+def scp_with_password(host_ip,remote_path,local_path,username,password):  
+    try:
+		t = paramiko.Transport((host_ip, 22))  
+		t.connect(username=username, password=password)  
+		
+		sftp = paramiko.SFTPClient.from_transport(t)  
+		sftp.get(remote_path, local_path)  
+		t.close() 
+	except Exception as e:
+        print e
+
+# secure copy data with rsa key		
+def scp_with_key(host_ip, host_port, remote_path, local_path, username, pkey_path):
+    try:
+        key=paramiko.RSAKey.from_private_key_file(pkey_path)
+        t = paramiko.Transport((host_ip, host_port))
+        t.connect(username=username, pkey=key)
+
+        sftp = paramiko.SFTPClient.from_transport(t)
+		sftp.get(remote_path, local_path)
+        t.close()
+    except Exception as e:
+        print e
+		
