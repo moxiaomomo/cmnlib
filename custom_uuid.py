@@ -29,10 +29,9 @@ def gen_uuid():
     # 40位字符串
     return ("%s%s" % (tssec, postfix))[:40]
 
-
 # for testing
 if __name__ == "__main__":
-   with open('tmp_ossid.txt', 'a') as fd:
+   with open('tmp_uuidlist.txt', 'a') as fd:
        for i in range(0, 20000000):
-           ossid = gen_ossid()
-           fd.write("%s\n" % ossid)
+           cur_uuid = gen_uuid()
+           fd.write("%s\n" % cur_uuid)
