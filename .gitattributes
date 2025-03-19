@@ -20,3 +20,16 @@
 *.PDF	 diff=astextplain
 *.rtf	 diff=astextplain
 *.RTF	 diff=astextplain
+
+# 强制将所有文本文件转换为 Unix 行尾格式
+*.txt text eol=lf
+
+# 忽略所有 .jpg 文件的差异比较
+*.jpg -diff
+*.png -diff
+
+# 对于 markdown 文件，启用 Git 的合并驱动器
+*.md merge
+
+# 特定文件夹下的二进制文件不进行合并
+bin/* binary
