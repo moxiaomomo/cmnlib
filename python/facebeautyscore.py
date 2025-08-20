@@ -21,23 +21,23 @@ def distance(px1,py1,px2,py2):
 # 分析人脸数据
 def analysisPhoto(imgPath):
 	face1,face2,results,smile = 0, 0, 0, 0
-        api = API(APIKEY, APISCRETE)
-        try:
-    	    detect_res = api.detection.detect(img=File(imgPath))
-        except Exception,e:
-            print e
-            detect_res = {}
+	api = API(APIKEY, APISCRETE)
+	try:
+		detect_res = api.detection.detect(img=File(imgPath))
+	except Exception(e):
+		print(e)
+		detect_res = {}
 
-        if not detect_res or not detect_res.get('face'):
-            return {'gender':'Unknown', 'age':0, 'score':0}
+	if not detect_res or not detect_res.get('face'):
+		return {'gender':'Unknown', 'age':0, 'score':0}
 
 	landmark_res = api.detection.landmark(face_id=detect_res['face'][0]['face_id'])
-	#print detect_res
-	#print landmark_res
+	#print(detect_res)
+	#print(landmark_res)
 
 	smile = int(detect_res['face'][0]['attribute']['smiling']['value'])
-        gender = detect_res['face'][0]['attribute']['gender']['value']
-        age = detect_res['face'][0]['attribute']['age']['value'] 
+	gender = detect_res['face'][0]['attribute']['gender']['value']
+	age = detect_res['face'][0]['attribute']['age']['value']
 	if smile < 20:
 		smile = -10
 	else:
@@ -66,9 +66,9 @@ def analysisPhoto(imgPath):
 				c1_x,
 				c1_y)
 
-        eyeb_delta = (yourface['right_eyebrow_right_corner']['x'] - yourface['right_eye_right_corner']['x']) + \
-             (yourface['left_eyebrow_left_corner']['x'] - yourface['left_eye_left_corner']['x'])
-        eye_width = yourface['right_eye_right_corner']['x'] - yourface['left_eye_left_corner']['x']
+	eyeb_delta = (yourface['right_eyebrow_right_corner']['x'] - yourface['right_eye_right_corner']['x']) + \
+			(yourface['left_eyebrow_left_corner']['x'] - yourface['left_eye_left_corner']['x'])
+	eye_width = yourface['right_eye_right_corner']['x'] - yourface['left_eye_left_corner']['x']
 
 	# 眼角之间的距离
 	# console.log('眼角之间的距离 = ' + c3)
@@ -89,11 +89,11 @@ def analysisPhoto(imgPath):
 				yourface['contour_right1']['x'],
 				yourface['contour_right1']['y'])
 
-        # 脸中下部宽度
-        face2_width = distance(yourface['contour_left3']['x'],
-                                yourface['contour_left3']['y'],
-                                yourface['contour_right3']['x'],
-                                yourface['contour_right3']['y']) 
+	# 脸中下部宽度
+	face2_width = distance(yourface['contour_left3']['x'],
+							yourface['contour_left3']['y'],
+							yourface['contour_right3']['x'],
+							yourface['contour_right3']['y']) 
 
 	# 下巴到鼻子下方的高度
 	c6 = distance(yourface['contour_chin']['x'],
@@ -117,11 +117,11 @@ def analysisPhoto(imgPath):
 				yourface['mouth_right_corner']['x'],
 				yourface['mouth_right_corner']['y'])
 
-        lip_dis = distance(yourface['mouth_upper_lip_top']['x'],
-                           yourface['mouth_upper_lip_top']['y'],
-                           yourface['mouth_lower_lip_bottom']['x'],
-                           yourface['mouth_lower_lip_bottom']['y'],
-        )
+	lip_dis = distance(yourface['mouth_upper_lip_top']['x'],
+						yourface['mouth_upper_lip_top']['y'],
+						yourface['mouth_lower_lip_bottom']['x'],
+						yourface['mouth_lower_lip_bottom']['y'],
+	)
 
 	# 嘴巴处的face大小
 	c9 = distance(yourface['contour_left6']['x'],
@@ -139,33 +139,33 @@ def analysisPhoto(imgPath):
 	# 鼻子宽度为脸宽的1/5
 	mustm += abs((c4/c5)*100 - 25)
 
-        # 上脸比中脸的宽度比相差不超过3%
-        mustm += abs((c5/face2_width)*100 - 97)/5
+	# 上脸比中脸的宽度比相差不超过3%
+	mustm += abs((c5/face2_width)*100 - 97)/5
 
-        # 眉毛比眼角宽约5%
-        eyeb_per = eyeb_delta/eye_width*100
-        print abs((c5/face2_width)*100 - 97)/5, eyeb_per, abs(eyeb_per - 20)/5, (10+abs(eyeb_per))/5
-        print abs((c8/c9)*100 - 55), abs((c8/c9)*100 - 45)
+	# 眉毛比眼角宽约5%
+	eyeb_per = eyeb_delta/eye_width*100
+	print(abs((c5/face2_width)*100 - 97)/5, eyeb_per, abs(eyeb_per - 20)/5, (10+abs(eyeb_per))/5)
+	print(abs((c8/c9)*100 - 55), abs((c8/c9)*100 - 45))
 
-        if eyeb_per > 0:
-            mustm +=  abs(eyeb_per - 20)/5
-        else:
-            mustm += (10+abs(eyeb_per))/5
+	if eyeb_per > 0:
+		mustm +=  abs(eyeb_per - 20)/5
+	else:
+		mustm += (10+abs(eyeb_per))/5
 
 	# 眼睛的宽度，应为同一水平脸部宽度的1/5
 	eyepj = (c7_left+c7_right)/2
 	mustm += abs(eyepj/c5*100 - 25)
 
 	# 理想嘴巴宽度应为同一脸部宽度的1/2
-        if smile < 0:
-    	    mustm += abs((c8/c9)*100 - 55)/2;
-        else:
-            mustm += abs((c8/c9)*100 - 45)/2;
+	if smile < 0:
+		mustm += abs((c8/c9)*100 - 55)/2;
+	else:
+		mustm += abs((c8/c9)*100 - 45)/2;
 
-        print smile, lip_dis, c8, lip_dis/c8*100
-        lip_per = lip_dis/c8*100
-        if smile < 0 and lip_per>=25:
-            mustm += abs(lip_per-25)
+	print(smile, lip_dis, c8, lip_dis/c8*100)
+	lip_per = lip_dis/c8*100
+	if smile < 0 and lip_per>=25:
+		mustm += abs(lip_per-25)
 
 	# 下巴到鼻子下方的高度 == 眉毛中点到鼻子最低处的距离
 	mustm += abs(c6 - c2)
@@ -175,4 +175,4 @@ def analysisPhoto(imgPath):
 
 
 if __name__ == "__main__":
-	print analysisPhoto(imgPath="/data/faceImg/huahua.jpg")
+	print(analysisPhoto(imgPath="/data/faceImg/huahua.jpg"))
