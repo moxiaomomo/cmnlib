@@ -1,6 +1,71 @@
 import cv2
 import os
+import sys
 import numpy as np
+import asyncio
+import base64
+from playwright.async_api import async_playwright
+
+# HTML 模板，与 Node.js 版本保持一致
+HTML_CONTENT = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SVGA Renderer</title>
+    <script src="https://cdn.jsdelivr.net/npm/svgaplayerweb@2.3.1/build/svga.min.js"></script>
+</head>
+<body style="margin:0; background:transparent;">
+    <canvas id="canvas"></canvas>
+    <script>
+    window.loadSvga = async (base64Data) => {
+        const canvas = document.getElementById('canvas');
+        try {
+            const parser = new SVGA.Parser(canvas);
+            const player = new SVGA.Player(canvas);
+            
+            const binaryString = atob(base64Data);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            
+            const blob = new Blob([bytes.buffer], { type: 'application/octet-stream' });
+            const blobUrl = URL.createObjectURL(blob);
+            
+            await new Promise((resolve, reject) => {
+                parser.load(blobUrl, (videoItem) => {
+                    player.setVideoItem(videoItem);
+                    canvas.width = videoItem.videoSize.width;
+                    canvas.height = videoItem.videoSize.height;
+                    window.videoItem = videoItem;
+                    window.player = player;
+                    resolve();
+                }, (error) => {
+                    console.error('SVGA Parse Error:', error);
+                    reject(error);
+                });
+            });
+            
+            return { success: true, frames: window.videoItem.frames, width: canvas.width, height: canvas.height };
+        } catch (e) {
+            console.error(e);
+            return { success: false, error: e.message };
+        }
+    };
+
+    window.captureFrame = (frameIndex, type) => {
+        window.player.stepToFrame(frameIndex);
+        const canvas = document.getElementById('canvas');
+        if (type === 'jpg') {
+            return canvas.toDataURL('image/jpeg', 0.92);
+        }
+        return canvas.toDataURL('image/png');
+    };
+    </script>
+</body>
+</html>
+"""
 
 def apply_watermark(frame, text=None, logo_path=None, font_path=None, font_scale=1.0):
     """在 BGR 图像上居中底部 1/4 位置添加文本/图片水印"""
@@ -195,9 +260,145 @@ def apply_watermark(frame, text=None, logo_path=None, font_path=None, font_scale
 
     return overlay
 
+async def convert_svga(
+    svga_file_path,
+    output_dir,
+    mix_bg_path=None,
+    output_video_path=None,
+    wm_text=None,
+    wm_logo=None,
+    wm_font_scale=1.0,
+    jpg_quality=95,
+):
+    """
+    读取 SVGA 文件，提取帧，支持可选背景混合、水印、输出 MP4。
+    mix_bg_path: 可选参数，指定背景图片路径，用于混合输出 JPG。
+    output_video_path: 可选参数，指定输出合成 MP4 路径。
+    wm_text: 可选参数，指定视频水印文本。
+    wm_logo: 可选参数，指定水印图像路径。
+    """
+    if (wm_text or wm_logo) and not output_video_path:
+        print("Error: wm_text/wm_logo 参数需要同时指定 --output_video_path")
+        return
 
-def extract_frames_with_alpha(
-    video_path,
+    # 路径处理
+    absolute_svga_path = os.path.abspath(svga_file_path)
+    absolute_output_dir = os.path.abspath(output_dir)
+    
+    if not os.path.exists(absolute_output_dir):
+        os.makedirs(absolute_output_dir)
+
+    # 读取文件并转 Base64
+    with open(absolute_svga_path, 'rb') as f:
+        svga_base64 = base64.b64encode(f.read()).decode('utf-8')
+
+    print("Launching browser...")
+
+    async with async_playwright() as p:
+        # 启动浏览器
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        
+        # 设置页面内容
+        await page.set_content(HTML_CONTENT)
+
+        print('Loading SVGA file...')
+        # 执行 JS 加载 SVGA
+        meta = await page.evaluate(f"window.loadSvga('{svga_base64}')")
+
+        if not meta.get('success'):
+            print(f"Failed to load SVGA: {meta.get('error')}")
+            await browser.close()
+            return
+
+        total_frames = meta['frames']
+        width = meta['width']
+        height = meta['height']
+        print(f"SVGA Info: {width}x{height}, Total Frames: {total_frames}")
+
+        # 初始化背景图和视频写入器
+        bg_image = None
+        if mix_bg_path:
+            bg_image = cv2.imread(mix_bg_path, cv2.IMREAD_COLOR)
+            if bg_image is None:
+                print(f"Error: 无法打开背景图片 {mix_bg_path}")
+                await browser.close()
+                return
+            bg_image = cv2.resize(bg_image, (width, height), interpolation=cv2.INTER_LINEAR)
+
+        video_writer = None
+        if output_video_path:
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
+            video_writer = cv2.VideoWriter(output_video_path, fourcc, 30, (width, height), True)  # 假设 30fps
+            if not video_writer.isOpened():
+                print(f"Error: 无法创建视频写入器 {output_video_path}")
+                await browser.close()
+                return
+
+        # 遍历帧并保存
+        for i in range(total_frames):
+            # 执行 JS 捕获帧
+            data_url = await page.evaluate("window.captureFrame({}, 'png')".format(i))
+            
+            # 解析 Base64 数据
+            header, encoded = data_url.split(",", 1)
+            image_data = base64.b64decode(encoded)
+            
+            # 解码为 numpy 数组
+            nparr = np.frombuffer(image_data, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+
+            # 处理背景混合
+            if mix_bg_path and bg_image is not None:
+                # SVGA 帧可能有 alpha
+                if frame.shape[2] == 4:
+                    alpha_channel = frame[:, :, 3].astype(np.float32) / 255.0
+                    alpha_3c = cv2.merge([alpha_channel, alpha_channel, alpha_channel])
+                    fg = frame[:, :, :3].astype(np.float32)
+                    bg = bg_image.astype(np.float32)
+                    blend = cv2.multiply(alpha_3c, fg) + cv2.multiply(1 - alpha_3c, bg)
+                    frame = np.clip(blend, 0, 255).astype(np.uint8)
+                else:
+                    frame = bg_image.copy()  # 如果没有 alpha，直接用背景
+
+            # 构造输出文件名
+            output_img_type = 'jpg' if mix_bg_path else 'png'
+            file_name = f"{i:06d}.{output_img_type}"
+            file_path = os.path.join(absolute_output_dir, file_name)
+            
+            # 保存图片
+            try:
+                if mix_bg_path:
+                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), jpg_quality]
+                    result, encoded_img = cv2.imencode(f'.{output_img_type}', frame, encode_param)
+                else:
+                    result, encoded_img = cv2.imencode(f'.{output_img_type}', frame)
+                if result:
+                    with open(file_path, 'wb') as f:
+                        f.write(encoded_img.tobytes())
+            except Exception as e:
+                print(f"Save error for frame {i}: {e}")
+
+            # 处理视频输出
+            frame_for_video = frame if mix_bg_path else cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            if output_video_path:
+                frame_write = frame_for_video.copy()
+                if wm_text or wm_logo:
+                    frame_write = apply_watermark(frame_write, wm_text, wm_logo, font_scale=wm_font_scale)
+                video_writer.write(frame_write)
+
+            if i % 10 == 0:
+                print(f"Processing frame {i}/{total_frames}")
+
+        if video_writer is not None:
+            video_writer.release()
+
+        print(f"\nDone! Frames saved to: {absolute_output_dir}")
+        await browser.close()
+
+def convert_video(
+    input_path,
     output_dir,
     mix_bg_path=None,
     output_video_path=None,
@@ -222,9 +423,9 @@ def extract_frames_with_alpha(
         os.makedirs(output_dir)
 
     # 2. 打开视频文件
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
-        print(f"Error: 无法打开视频文件 {video_path}")
+        print(f"Error: 无法打开视频文件 {input_path}")
         return
 
     # 获取视频信息
@@ -314,7 +515,7 @@ def extract_frames_with_alpha(
         if output_video_path:
             if video_writer is None:
                 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
+                os.makedirs(os.path.dirname(output_dir + '/' + output_video_path), exist_ok=True)
                 video_writer = cv2.VideoWriter(
                     output_video_path, fourcc, fps, (half_width, height), True
                 )
@@ -341,12 +542,16 @@ def extract_frames_with_alpha(
         video_writer.release()
     print(f"\n处理完成! 共生成 {frame_idx} 张图片。")
 
+def convert_gif():
+    pass
+
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="从左右拼接 RGB/Alpha 视频中提取帧，支持可选背景混合与视频合成")
-    parser.add_argument("input_video", help="输入视频文件路径")
+    parser.add_argument("input_type", help="输入媒体文件类型", choices=["mp4","vap","svga","gif"])
+    parser.add_argument("input_path", help="输入媒体文件路径")
     parser.add_argument("output_folder", help="输出文件夹")
     parser.add_argument("--mix_bg_path", dest="mix_bg_path", default=None,
                         help="可选的背景图片路径（指定后输出 JPG 并做前景透明混合）")
@@ -366,13 +571,35 @@ if __name__ == "__main__":
     if (args.wm_text or args.wm_logo) and not args.output_video_path:
         parser.error("--wm_text/--wm_logo 需要和 --output_video_path 一起使用")
 
-    extract_frames_with_alpha(
-        args.input_video,
-        args.output_folder,
-        mix_bg_path=args.mix_bg_path,
-        output_video_path=args.output_video_path,
-        wm_text=args.wm_text,
-        wm_logo=args.wm_logo,
-        wm_font_scale=args.wm_font_scale,
-        jpg_quality=args.jpg_quality
-    )
+    switch = {
+        "mp4": convert_video,
+        "vap": convert_video,
+        "svga": convert_svga,
+        "gif": convert_gif
+    }
+    
+    match args.input_type:
+        case "mp4" | "vap":
+            convert_video(
+                args.input_path,
+                args.output_folder,
+                mix_bg_path=args.mix_bg_path,
+                output_video_path=args.output_video_path,
+                wm_text=args.wm_text,
+                wm_logo=args.wm_logo,
+                wm_font_scale=args.wm_font_scale,
+                jpg_quality=args.jpg_quality
+            )
+        case "svga":
+            asyncio.run(convert_svga(
+                args.input_path,
+                args.output_folder,
+                mix_bg_path=args.mix_bg_path,
+                output_video_path=args.output_video_path,
+                wm_text=args.wm_text,
+                wm_logo=args.wm_logo,
+                wm_font_scale=args.wm_font_scale,
+                jpg_quality=args.jpg_quality
+            ))
+        case "gif":
+            convert_gif()
