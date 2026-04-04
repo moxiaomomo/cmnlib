@@ -7,7 +7,7 @@ import base64
 from playwright.async_api import async_playwright
 
 # HTML 模板，与 Node.js 版本保持一致
-HTML_CONTENT = """
+SVGA_HTML_CONTENT = """
 <!DOCTYPE html>
 <html>
 <head>
@@ -260,143 +260,6 @@ def apply_watermark(frame, text=None, logo_path=None, font_path=None, font_scale
 
     return overlay
 
-async def convert_svga(
-    svga_file_path,
-    output_dir,
-    mix_bg_path=None,
-    output_video_path=None,
-    wm_text=None,
-    wm_logo=None,
-    wm_font_scale=1.0,
-    jpg_quality=95,
-):
-    """
-    读取 SVGA 文件，提取帧，支持可选背景混合、水印、输出 MP4。
-    mix_bg_path: 可选参数，指定背景图片路径，用于混合输出 JPG。
-    output_video_path: 可选参数，指定输出合成 MP4 路径。
-    wm_text: 可选参数，指定视频水印文本。
-    wm_logo: 可选参数，指定水印图像路径。
-    """
-    if (wm_text or wm_logo) and not output_video_path:
-        print("Error: wm_text/wm_logo 参数需要同时指定 --output_video_path")
-        return
-
-    # 路径处理
-    absolute_svga_path = os.path.abspath(svga_file_path)
-    absolute_output_dir = os.path.abspath(output_dir)
-    
-    if not os.path.exists(absolute_output_dir):
-        os.makedirs(absolute_output_dir)
-
-    # 读取文件并转 Base64
-    with open(absolute_svga_path, 'rb') as f:
-        svga_base64 = base64.b64encode(f.read()).decode('utf-8')
-
-    print("Launching browser...")
-
-    async with async_playwright() as p:
-        # 启动浏览器
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        
-        # 设置页面内容
-        await page.set_content(HTML_CONTENT)
-
-        print('Loading SVGA file...')
-        # 执行 JS 加载 SVGA
-        meta = await page.evaluate(f"window.loadSvga('{svga_base64}')")
-
-        if not meta.get('success'):
-            print(f"Failed to load SVGA: {meta.get('error')}")
-            await browser.close()
-            return
-
-        total_frames = meta['frames']
-        width = meta['width']
-        height = meta['height']
-        print(f"SVGA Info: {width}x{height}, Total Frames: {total_frames}")
-
-        # 初始化背景图和视频写入器
-        bg_image = None
-        if mix_bg_path:
-            bg_image = cv2.imread(mix_bg_path, cv2.IMREAD_COLOR)
-            if bg_image is None:
-                print(f"Error: 无法打开背景图片 {mix_bg_path}")
-                await browser.close()
-                return
-            bg_image = cv2.resize(bg_image, (width, height), interpolation=cv2.INTER_LINEAR)
-
-        video_writer = None
-        if output_video_path:
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
-            video_writer = cv2.VideoWriter(output_video_path, fourcc, 30, (width, height), True)  # 假设 30fps
-            if not video_writer.isOpened():
-                print(f"Error: 无法创建视频写入器 {output_video_path}")
-                await browser.close()
-                return
-
-        # 遍历帧并保存
-        for i in range(total_frames):
-            # 执行 JS 捕获帧
-            data_url = await page.evaluate("window.captureFrame({}, 'png')".format(i))
-            
-            # 解析 Base64 数据
-            header, encoded = data_url.split(",", 1)
-            image_data = base64.b64decode(encoded)
-            
-            # 解码为 numpy 数组
-            nparr = np.frombuffer(image_data, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-
-            # 处理背景混合
-            if mix_bg_path and bg_image is not None:
-                # SVGA 帧可能有 alpha
-                if frame.shape[2] == 4:
-                    alpha_channel = frame[:, :, 3].astype(np.float32) / 255.0
-                    alpha_3c = cv2.merge([alpha_channel, alpha_channel, alpha_channel])
-                    fg = frame[:, :, :3].astype(np.float32)
-                    bg = bg_image.astype(np.float32)
-                    blend = cv2.multiply(alpha_3c, fg) + cv2.multiply(1 - alpha_3c, bg)
-                    frame = np.clip(blend, 0, 255).astype(np.uint8)
-                else:
-                    frame = bg_image.copy()  # 如果没有 alpha，直接用背景
-
-            # 构造输出文件名
-            output_img_type = 'jpg' if mix_bg_path else 'png'
-            file_name = f"{i:06d}.{output_img_type}"
-            file_path = os.path.join(absolute_output_dir, file_name)
-            
-            # 保存图片
-            try:
-                if mix_bg_path:
-                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), jpg_quality]
-                    result, encoded_img = cv2.imencode(f'.{output_img_type}', frame, encode_param)
-                else:
-                    result, encoded_img = cv2.imencode(f'.{output_img_type}', frame)
-                if result:
-                    with open(file_path, 'wb') as f:
-                        f.write(encoded_img.tobytes())
-            except Exception as e:
-                print(f"Save error for frame {i}: {e}")
-
-            # 处理视频输出
-            frame_for_video = frame if mix_bg_path else cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-            if output_video_path:
-                frame_write = frame_for_video.copy()
-                if wm_text or wm_logo:
-                    frame_write = apply_watermark(frame_write, wm_text, wm_logo, font_scale=wm_font_scale)
-                video_writer.write(frame_write)
-
-            if i % 10 == 0:
-                print(f"Processing frame {i}/{total_frames}")
-
-        if video_writer is not None:
-            video_writer.release()
-
-        print(f"\nDone! Frames saved to: {absolute_output_dir}")
-        await browser.close()
-
 def convert_video(
     input_path,
     output_dir,
@@ -442,6 +305,9 @@ def convert_video(
 
     frame_idx = 0
     video_writer = None
+    bg_image_orig = None
+    bg_w_output = half_width
+    bg_h_output = height
 
     while True:
         ret, frame = cap.read()
@@ -480,50 +346,74 @@ def convert_video(
         output_path = os.path.join(output_dir, output_filename)
 
         if mix_bg_path:
-            # 5a. 加载背景图并调整到视频单帧大小
+            # 5a. 加载背景图（第一帧时），使用其尺寸作为输出标准
             if frame_idx == 0:
-                bg_image = cv2.imread(mix_bg_path, cv2.IMREAD_COLOR)
-                if bg_image is None:
+                bg_image_orig = cv2.imread(mix_bg_path, cv2.IMREAD_COLOR)
+                if bg_image_orig is None:
                     print(f"Error: 无法打开背景图片 {mix_bg_path}")
                     cap.release()
                     if video_writer is not None:
                         video_writer.release()
                     return
-                bg_image = cv2.resize(
-                    bg_image, (half_width, height), interpolation=cv2.INTER_LINEAR
-                )
+                bg_h_output, bg_w_output = bg_image_orig.shape[:2]
 
-            # 5b. 透明混合（前景是 rgb_part + alpha_channel）
-            alpha_norm = alpha_channel.astype(np.float32) / 255.0
-            alpha_3c = cv2.merge([alpha_norm, alpha_norm, alpha_norm])
+            # 计算前景尺寸：宽度按背景宽度，等比例缩放高度
+            fg_h, fg_w = rgb_part.shape[:2]
+            target_w = bg_w_output
+            target_h = max(1, int(fg_h * target_w / fg_w))
 
-            fg = rgb_part.astype(np.float32)
-            bg = bg_image.astype(np.float32)
+            resized_rgb = cv2.resize(rgb_part, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+            resized_alpha = cv2.resize(alpha_channel, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
-            blend = cv2.multiply(alpha_3c, fg) + cv2.multiply(1.0 - alpha_3c, bg)
-            blend = np.clip(blend, 0, 255).astype(np.uint8)
+            # 5b. 创建输出画布（复制背景图）
+            output_frame = bg_image_orig.copy()
+
+            # 计算垂直居中位置
+            offset_x = (bg_w_output - target_w) // 2
+            offset_y = (bg_h_output - target_h) // 2
+
+            fg_x_start = max(0, offset_x)
+            fg_y_start = max(0, offset_y)
+            fg_x_end = min(bg_w_output, offset_x + target_w)
+            fg_y_end = min(bg_h_output, offset_y + target_h)
+
+            src_x_start = max(0, -offset_x)
+            src_y_start = max(0, -offset_y)
+            src_x_end = src_x_start + (fg_x_end - fg_x_start)
+            src_y_end = src_y_start + (fg_y_end - fg_y_start)
+
+            alpha_patch = resized_alpha[src_y_start:src_y_end, src_x_start:src_x_end].astype(np.float32) / 255.0
+            alpha_3c = cv2.merge([alpha_patch, alpha_patch, alpha_patch])
+
+            fg_patch = resized_rgb[src_y_start:src_y_end, src_x_start:src_x_end].astype(np.float32)
+            bg_patch = output_frame[fg_y_start:fg_y_end, fg_x_start:fg_x_end].astype(np.float32)
+
+            blend_patch = cv2.multiply(alpha_3c, fg_patch) + cv2.multiply(1.0 - alpha_3c, bg_patch)
+            blend_patch = np.clip(blend_patch, 0, 255).astype(np.uint8)
+
+            output_frame[fg_y_start:fg_y_end, fg_x_start:fg_x_end] = blend_patch
 
             # 保存 JPG
-            cv2.imwrite(output_path, blend, [cv2.IMWRITE_JPEG_QUALITY, jpg_quality])
-            frame_for_video = blend
+            cv2.imwrite(output_path, output_frame, [cv2.IMWRITE_JPEG_QUALITY, jpg_quality])
+            frame_for_video = output_frame
         else:
             # 保存带 alpha 的 PNG
             cv2.imwrite(output_path, bgra_image)
             frame_for_video = cv2.cvtColor(bgra_image, cv2.COLOR_BGRA2BGR)
-
-        # 6. 如需要输出视频，写入 VideoWriter
+        
+        # 6. 如需要输出视频，写入 VideoWriter（第一帧时初始化）
         if output_video_path:
             if video_writer is None:
                 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
                 os.makedirs(os.path.dirname(output_dir + '/' + output_video_path), exist_ok=True)
                 video_writer = cv2.VideoWriter(
-                    output_video_path, fourcc, fps, (half_width, height), True
+                    output_video_path, fourcc, fps, (bg_w_output, bg_h_output), True
                 )
                 if not video_writer.isOpened():
                     print(f"Error: 无法创建视频写入器 {output_video_path}")
                     cap.release()
                     return
-
+            
             frame_write = frame_for_video.copy()
             if wm_text or wm_logo:
                 frame_write = apply_watermark(
@@ -542,8 +432,325 @@ def convert_video(
         video_writer.release()
     print(f"\n处理完成! 共生成 {frame_idx} 张图片。")
 
-def convert_gif():
-    pass
+async def convert_svga(
+    svga_file_path,
+    output_dir,
+    mix_bg_path=None,
+    output_video_path=None,
+    wm_text=None,
+    wm_logo=None,
+    wm_font_scale=1.0,
+    jpg_quality=95,
+):
+    """
+    读取 SVGA 文件，提取帧，支持可选背景混合、水印、输出 MP4。
+    mix_bg_path: 可选参数，指定背景图片路径，用于混合输出 JPG。
+    output_video_path: 可选参数，指定输出合成 MP4 路径。
+    wm_text: 可选参数，指定视频水印文本。
+    wm_logo: 可选参数，指定水印图像路径。
+    """
+    if (wm_text or wm_logo) and not output_video_path:
+        print("Error: wm_text/wm_logo 参数需要同时指定 --output_video_path")
+        return
+
+    # 路径处理
+    absolute_svga_path = os.path.abspath(svga_file_path)
+    absolute_output_dir = os.path.abspath(output_dir)
+    
+    if not os.path.exists(absolute_output_dir):
+        os.makedirs(absolute_output_dir)
+
+    # 读取文件并转 Base64
+    with open(absolute_svga_path, 'rb') as f:
+        svga_base64 = base64.b64encode(f.read()).decode('utf-8')
+
+    print("Launching browser...")
+
+    async with async_playwright() as p:
+        # 启动浏览器
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        
+        # 设置页面内容
+        await page.set_content(SVGA_HTML_CONTENT)
+
+        print('Loading SVGA file...')
+        # 执行 JS 加载 SVGA
+        meta = await page.evaluate(f"window.loadSvga('{svga_base64}')")
+
+        if not meta.get('success'):
+            print(f"Failed to load SVGA: {meta.get('error')}")
+            await browser.close()
+            return
+
+        total_frames = meta['frames']
+        width = meta['width']
+        height = meta['height']
+        print(f"SVGA Info: {width}x{height}, Total Frames: {total_frames}")
+
+        # 初始化背景图
+        bg_image_orig = None
+        bg_w_output = width
+        bg_h_output = height
+        
+        if mix_bg_path:
+            bg_image_orig = cv2.imread(mix_bg_path, cv2.IMREAD_COLOR)
+            if bg_image_orig is None:
+                print(f"Error: 无法打开背景图片 {mix_bg_path}")
+                await browser.close()
+                return
+            bg_h_output, bg_w_output = bg_image_orig.shape[:2]
+
+        video_writer = None
+        if output_video_path:
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
+            video_writer = cv2.VideoWriter(output_video_path, fourcc, 30, (bg_w_output, bg_h_output), True)  # 假设 30fps
+            if not video_writer.isOpened():
+                print(f"Error: 无法创建视频写入器 {output_video_path}")
+                await browser.close()
+                return
+
+        # 遍历帧并保存
+        for i in range(total_frames):
+            # 执行 JS 捕获帧
+            data_url = await page.evaluate("window.captureFrame({}, 'png')".format(i))
+            
+            # 解析 Base64 数据
+            header, encoded = data_url.split(",", 1)
+            image_data = base64.b64decode(encoded)
+            
+            # 解码为 numpy 数组
+            nparr = np.frombuffer(image_data, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+
+            # 处理背景混合
+            if mix_bg_path and bg_image_orig is not None:
+                fg_h, fg_w = frame.shape[:2]
+                target_w = bg_w_output
+                target_h = max(1, int(fg_h * target_w / fg_w))
+
+                frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+
+                offset_x = (bg_w_output - target_w) // 2
+                offset_y = (bg_h_output - target_h) // 2
+
+                output_frame = bg_image_orig.copy()
+
+                fg_x_start = max(0, offset_x)
+                fg_y_start = max(0, offset_y)
+                fg_x_end = min(bg_w_output, offset_x + target_w)
+                fg_y_end = min(bg_h_output, offset_y + target_h)
+
+                src_x_start = max(0, -offset_x)
+                src_y_start = max(0, -offset_y)
+                src_x_end = src_x_start + (fg_x_end - fg_x_start)
+                src_y_end = src_y_start + (fg_y_end - fg_y_start)
+
+                if frame.shape[2] == 4:
+                    alpha_patch = frame[src_y_start:src_y_end, src_x_start:src_x_end, 3].astype(np.float32) / 255.0
+                    alpha_3c = cv2.merge([alpha_patch, alpha_patch, alpha_patch])
+
+                    fg_patch = frame[src_y_start:src_y_end, src_x_start:src_x_end, :3].astype(np.float32)
+                    bg_patch = output_frame[fg_y_start:fg_y_end, fg_x_start:fg_x_end].astype(np.float32)
+
+                    blend_patch = cv2.multiply(alpha_3c, fg_patch) + cv2.multiply(1.0 - alpha_3c, bg_patch)
+                    blend_patch = np.clip(blend_patch, 0, 255).astype(np.uint8)
+
+                    output_frame[fg_y_start:fg_y_end, fg_x_start:fg_x_end] = blend_patch
+                else:
+                    output_frame[fg_y_start:fg_y_end, fg_x_start:fg_x_end] = frame[src_y_start:src_y_end, src_x_start:src_x_end]
+
+                frame = output_frame
+
+            # 构造输出文件名
+            output_img_type = 'jpg' if mix_bg_path else 'png'
+            file_name = f"{i:06d}.{output_img_type}"
+            file_path = os.path.join(absolute_output_dir, file_name)
+            
+            # 保存图片
+            try:
+                if mix_bg_path:
+                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), jpg_quality]
+                    result, encoded_img = cv2.imencode(f'.{output_img_type}', frame, encode_param)
+                else:
+                    result, encoded_img = cv2.imencode(f'.{output_img_type}', frame)
+                if result:
+                    with open(file_path, 'wb') as f:
+                        f.write(encoded_img.tobytes())
+            except Exception as e:
+                print(f"Save error for frame {i}: {e}")
+
+            # 处理视频输出
+            frame_for_video = frame if mix_bg_path else cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            if output_video_path:
+                frame_write = frame_for_video.copy()
+                if wm_text or wm_logo:
+                    frame_write = apply_watermark(frame_write, wm_text, wm_logo, font_scale=wm_font_scale)
+                video_writer.write(frame_write)
+
+            if i % 10 == 0:
+                print(f"Processing frame {i}/{total_frames}")
+
+        if video_writer is not None:
+            video_writer.release()
+
+        print(f"\nDone! Frames saved to: {absolute_output_dir}")
+        await browser.close()
+def convert_gif(
+    gif_file_path,
+    output_dir,
+    mix_bg_path=None,
+    output_video_path=None,
+    wm_text=None,
+    wm_logo=None,
+    wm_font_scale=1.0,
+    jpg_quality=95,
+):
+    """
+    读取 GIF 动图，提取帧，支持可选背景混合、水印、输出 MP4。
+    mix_bg_path: 可选参数，指定背景图片路径，用于混合输出 JPG。
+    output_video_path: 可选参数，指定输出合成 MP4 路径。
+    wm_text: 可选参数，指定视频水印文本。
+    wm_logo: 可选参数，指定水印图像路径。
+    """
+    if (wm_text or wm_logo) and not output_video_path:
+        print("Error: wm_text/wm_logo 参数需要同时指定 --output_video_path")
+        return
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    gif_width = None
+    gif_height = None
+    fps = 30
+    frames = []
+
+    try:
+        from PIL import Image, ImageSequence
+        gif = Image.open(gif_file_path)
+        gif_width, gif_height = gif.size
+        duration = gif.info.get('duration', 100)
+        if duration and duration > 0:
+            fps = max(1, round(1000.0 / duration))
+
+        for frame in ImageSequence.Iterator(gif):
+            frame_rgba = frame.convert('RGBA')
+            frames.append(np.array(frame_rgba))
+    except ImportError:
+        cap = cv2.VideoCapture(gif_file_path)
+        if not cap.isOpened():
+            print(f"Error: 无法打开 GIF 文件 {gif_file_path}")
+            return
+
+        gif_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        gif_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA))
+        cap.release()
+
+    if gif_width is None or gif_height is None:
+        print(f"Error: 无法读取 GIF 大小信息 {gif_file_path}")
+        return
+
+    bg_image_orig = None
+    bg_w_output = gif_width
+    bg_h_output = gif_height
+    
+    if mix_bg_path:
+        bg_image_orig = cv2.imread(mix_bg_path, cv2.IMREAD_COLOR)
+        if bg_image_orig is None:
+            print(f"Error: 无法打开背景图片 {mix_bg_path}")
+            return
+        bg_h_output, bg_w_output = bg_image_orig.shape[:2]
+
+    video_writer = None
+    if output_video_path:
+        if os.path.dirname(output_video_path):
+            os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        video_writer = cv2.VideoWriter(output_video_path, fourcc, fps, (bg_w_output, bg_h_output), True)
+        if not video_writer.isOpened():
+            print(f"Error: 无法创建视频写入器 {output_video_path}")
+            return
+
+    for i, frame_np in enumerate(frames):
+        frame_bgra = cv2.cvtColor(frame_np, cv2.COLOR_RGBA2BGRA)
+
+        if mix_bg_path and bg_image_orig is not None:
+            fg_h, fg_w = frame_bgra.shape[:2]
+            target_w = min(bg_w_output, fg_w * 2)
+            target_h = max(1, int(fg_h * target_w / fg_w))
+
+            frame_bgra = cv2.resize(frame_bgra, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+            
+            offset_x = (bg_w_output - target_w) // 2
+            offset_y = (bg_h_output - target_h) // 2
+            
+            output_frame = bg_image_orig.copy()
+            
+            fg_x_start = max(0, offset_x)
+            fg_y_start = max(0, offset_y)
+            fg_x_end = min(bg_w_output, offset_x + target_w)
+            fg_y_end = min(bg_h_output, offset_y + target_h)
+            
+            src_x_start = max(0, -offset_x)
+            src_y_start = max(0, -offset_y)
+            src_x_end = src_x_start + (fg_x_end - fg_x_start)
+            src_y_end = src_y_start + (fg_y_end - fg_y_start)
+            
+            alpha_patch = frame_bgra[src_y_start:src_y_end, src_x_start:src_x_end, 3].astype(np.float32) / 255.0
+            alpha_3c = cv2.merge([alpha_patch, alpha_patch, alpha_patch])
+            
+            fg_patch = frame_bgra[src_y_start:src_y_end, src_x_start:src_x_end, :3].astype(np.float32)
+            bg_patch = output_frame[fg_y_start:fg_y_end, fg_x_start:fg_x_end].astype(np.float32)
+            
+            blend_patch = cv2.multiply(alpha_3c, fg_patch) + cv2.multiply(1.0 - alpha_3c, bg_patch)
+            blend_patch = np.clip(blend_patch, 0, 255).astype(np.uint8)
+            
+            output_frame[fg_y_start:fg_y_end, fg_x_start:fg_x_end] = blend_patch
+        else:
+            output_frame = frame_bgra
+
+        output_img_type = 'jpg' if mix_bg_path else 'png'
+        file_name = f"{i:06d}.{output_img_type}"
+        file_path = os.path.join(output_dir, file_name)
+
+        try:
+            if mix_bg_path:
+                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), jpg_quality]
+                result, encoded_img = cv2.imencode(f'.{output_img_type}', output_frame, encode_param)
+            else:
+                result, encoded_img = cv2.imencode(f'.{output_img_type}', output_frame)
+            if result:
+                with open(file_path, 'wb') as f:
+                    f.write(encoded_img.tobytes())
+        except Exception as e:
+            print(f"Save error for frame {i}: {e}")
+
+        if output_video_path:
+            # 转换为 BGR 用于视频写入
+            if mix_bg_path:
+                frame_for_video = output_frame  # 已经是 BGR（背景图）
+            else:
+                frame_for_video = cv2.cvtColor(output_frame, cv2.COLOR_BGRA2BGR)
+            frame_write = frame_for_video.copy()
+            if wm_text or wm_logo:
+                frame_write = apply_watermark(frame_write, wm_text, wm_logo, font_scale=wm_font_scale)
+            video_writer.write(frame_write)
+
+        if i % 10 == 0:
+            print(f"Processing frame {i}/{len(frames)}")
+
+    if video_writer is not None:
+        video_writer.release()
+
+    print(f"\nDone! Frames saved to: {output_dir}")
 
 
 if __name__ == "__main__":
@@ -602,4 +809,22 @@ if __name__ == "__main__":
                 jpg_quality=args.jpg_quality
             ))
         case "gif":
-            convert_gif()
+            convert_gif(
+                args.input_path,
+                args.output_folder,
+                mix_bg_path=args.mix_bg_path,
+                output_video_path=args.output_video_path,
+                wm_text=args.wm_text,
+                wm_logo=args.wm_logo,
+                wm_font_scale=args.wm_font_scale,
+                jpg_quality=args.jpg_quality
+            )
+
+
+"""usage
+python alphaVideo2png.py gif 5.gif test_gif_out --mix_bg_path=bg.jpg --output_video_path=./test_gif_out/gif2video.mp4 --wm_text="元子星科技 出品" --wm_logo=logo.png --wm_font_scale=0.5
+
+python alphaVideo2png.py svga 3.svga test_svga_out --mix_bg_path=bg.jpg --output_video_path=./test_svga_out/out.mp4 --wm_text="元子星科技 出品" --wm_logo=logo.png --wm_font_scale=0.5
+
+python alphaVideo2png.py mp4 1.mp4 out_dir --mix_bg_path=bg.jpg --output_video_path=./out_dir/out.mp4 --wm_text="元子星科技 出品" --wm_logo=logo.png --wm_font_scale=0.5
+"""
