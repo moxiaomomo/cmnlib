@@ -1,12 +1,11 @@
 import cv2
 import os
-import sys
 import numpy as np
 import asyncio
 import base64
 from playwright.async_api import async_playwright
 
-# HTML 模板，与 Node.js 版本保持一致
+# 在puppeteer中加载SVGA的HTML模板，包含必要的JS逻辑来解析SVGA文件并捕获帧
 SVGA_HTML_CONTENT = """
 <!DOCTYPE html>
 <html>
@@ -68,7 +67,7 @@ SVGA_HTML_CONTENT = """
 """
 
 def apply_watermark(frame, text=None, logo_path=None, font_path=None, font_scale=1.0):
-    """在 BGR 图像上居中底部 1/4 位置添加文本/图片水印"""
+    """在 BGR 图像上居中底部约 1/4 位置添加文本/图片水印"""
     h, w = frame.shape[:2]
     overlay = frame.copy()
 
@@ -263,8 +262,8 @@ def apply_watermark(frame, text=None, logo_path=None, font_path=None, font_scale
 def convert_video(
     input_path,
     output_dir,
-    mix_bg_path=None,
     output_video_path=None,
+    mix_bg_path=None,
     wm_text=None,
     wm_logo=None,
     wm_font_scale=1.0,
@@ -393,24 +392,27 @@ def convert_video(
 
             output_frame[fg_y_start:fg_y_end, fg_x_start:fg_x_end] = blend_patch
 
-            # 保存 JPG
-            cv2.imwrite(output_path, output_frame, [cv2.IMWRITE_JPEG_QUALITY, jpg_quality])
+            # 不输出视频时，则输出 JPG序列
+            if not output_video_path:
+                cv2.imwrite(output_path, output_frame, [cv2.IMWRITE_JPEG_QUALITY, jpg_quality])
             frame_for_video = output_frame
         else:
-            # 保存带 alpha 的 PNG
-            cv2.imwrite(output_path, bgra_image)
+            # 不输出视频时，则输出带 alpha 的 PNG序列
+            if not output_video_path:
+                cv2.imwrite(output_path, bgra_image)
             frame_for_video = cv2.cvtColor(bgra_image, cv2.COLOR_BGRA2BGR)
-        
+
         # 6. 如需要输出视频，写入 VideoWriter（第一帧时初始化）
         if output_video_path:
+            output_video_full_path = os.path.join(output_dir, output_video_path)
             if video_writer is None:
                 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                os.makedirs(os.path.dirname(output_dir + '/' + output_video_path), exist_ok=True)
+                os.makedirs(os.path.dirname(output_video_full_path), exist_ok=True)
                 video_writer = cv2.VideoWriter(
-                    output_video_path, fourcc, fps, (bg_w_output, bg_h_output), True
+                    output_video_full_path, fourcc, fps, (bg_w_output, bg_h_output), True
                 )
                 if not video_writer.isOpened():
-                    print(f"Error: 无法创建视频写入器 {output_video_path}")
+                    print(f"Error: 无法创建视频写入器 {output_video_full_path}")
                     cap.release()
                     return
             
@@ -435,8 +437,8 @@ def convert_video(
 async def convert_svga(
     svga_file_path,
     output_dir,
-    mix_bg_path=None,
     output_video_path=None,
+    mix_bg_path=None,
     wm_text=None,
     wm_logo=None,
     wm_font_scale=1.0,
@@ -504,10 +506,11 @@ async def convert_svga(
         video_writer = None
         if output_video_path:
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
-            video_writer = cv2.VideoWriter(output_video_path, fourcc, 30, (bg_w_output, bg_h_output), True)  # 假设 30fps
+            output_video_full_path = os.path.join(output_dir, output_video_path)
+            os.makedirs(os.path.dirname(output_video_full_path), exist_ok=True)
+            video_writer = cv2.VideoWriter(output_video_full_path, fourcc, 30, (bg_w_output, bg_h_output), True)  # 假设 30fps
             if not video_writer.isOpened():
-                print(f"Error: 无法创建视频写入器 {output_video_path}")
+                print(f"Error: 无法创建视频写入器 {output_video_full_path}")
                 await browser.close()
                 return
 
@@ -568,26 +571,26 @@ async def convert_svga(
             file_name = f"{i:06d}.{output_img_type}"
             file_path = os.path.join(absolute_output_dir, file_name)
             
-            # 保存图片
-            try:
-                if mix_bg_path:
-                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), jpg_quality]
-                    result, encoded_img = cv2.imencode(f'.{output_img_type}', frame, encode_param)
-                else:
-                    result, encoded_img = cv2.imencode(f'.{output_img_type}', frame)
-                if result:
-                    with open(file_path, 'wb') as f:
-                        f.write(encoded_img.tobytes())
-            except Exception as e:
-                print(f"Save error for frame {i}: {e}")
-
-            # 处理视频输出
-            frame_for_video = frame if mix_bg_path else cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            # 处理视频/图片序列输出
             if output_video_path:
+                frame_for_video = frame if mix_bg_path else cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
                 frame_write = frame_for_video.copy()
                 if wm_text or wm_logo:
                     frame_write = apply_watermark(frame_write, wm_text, wm_logo, font_scale=wm_font_scale)
                 video_writer.write(frame_write)
+            else:
+                # 不输出视频，则保存图片
+                try:
+                    if mix_bg_path:
+                        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), jpg_quality]
+                        result, encoded_img = cv2.imencode(f'.{output_img_type}', frame, encode_param)
+                    else:
+                        result, encoded_img = cv2.imencode(f'.{output_img_type}', frame)
+                    if result:
+                        with open(file_path, 'wb') as f:
+                            f.write(encoded_img.tobytes())
+                except Exception as e:
+                    print(f"Save error for frame {i}: {e}")                
 
             if i % 10 == 0:
                 print(f"Processing frame {i}/{total_frames}")
@@ -595,13 +598,13 @@ async def convert_svga(
         if video_writer is not None:
             video_writer.release()
 
-        print(f"\nDone! Frames saved to: {absolute_output_dir}")
+        print(f"\n处理完成! 共处理 {total_frames} 帧图像。")
         await browser.close()
 def convert_gif(
     gif_file_path,
     output_dir,
-    mix_bg_path=None,
     output_video_path=None,
+    mix_bg_path=None,
     wm_text=None,
     wm_logo=None,
     wm_font_scale=1.0,
@@ -671,12 +674,12 @@ def convert_gif(
 
     video_writer = None
     if output_video_path:
-        if os.path.dirname(output_video_path):
-            os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
+        output_video_full_path = os.path.join(output_dir, output_video_path)
+        os.makedirs(os.path.dirname(output_video_full_path), exist_ok=True)
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        video_writer = cv2.VideoWriter(output_video_path, fourcc, fps, (bg_w_output, bg_h_output), True)
+        video_writer = cv2.VideoWriter(output_video_full_path, fourcc, fps, (bg_w_output, bg_h_output), True)
         if not video_writer.isOpened():
-            print(f"Error: 无法创建视频写入器 {output_video_path}")
+            print(f"Error: 无法创建视频写入器 {output_video_full_path}")
             return
 
     for i, frame_np in enumerate(frames):
@@ -721,20 +724,8 @@ def convert_gif(
         file_name = f"{i:06d}.{output_img_type}"
         file_path = os.path.join(output_dir, file_name)
 
-        try:
-            if mix_bg_path:
-                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), jpg_quality]
-                result, encoded_img = cv2.imencode(f'.{output_img_type}', output_frame, encode_param)
-            else:
-                result, encoded_img = cv2.imencode(f'.{output_img_type}', output_frame)
-            if result:
-                with open(file_path, 'wb') as f:
-                    f.write(encoded_img.tobytes())
-        except Exception as e:
-            print(f"Save error for frame {i}: {e}")
-
         if output_video_path:
-            # 转换为 BGR 用于视频写入
+            # 输出视频；转换为 BGR 用于视频写入
             if mix_bg_path:
                 frame_for_video = output_frame  # 已经是 BGR（背景图）
             else:
@@ -743,20 +734,31 @@ def convert_gif(
             if wm_text or wm_logo:
                 frame_write = apply_watermark(frame_write, wm_text, wm_logo, font_scale=wm_font_scale)
             video_writer.write(frame_write)
+        else:
+            # 不输出视频，则保存图片
+            try:
+                if mix_bg_path:
+                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), jpg_quality]
+                    result, encoded_img = cv2.imencode(f'.{output_img_type}', output_frame, encode_param)
+                else:
+                    result, encoded_img = cv2.imencode(f'.{output_img_type}', output_frame)
+                if result:
+                    with open(file_path, 'wb') as f:
+                        f.write(encoded_img.tobytes())
+            except Exception as e:
+                print(f"Save error for frame {i}: {e}")           
 
         if i % 10 == 0:
             print(f"Processing frame {i}/{len(frames)}")
 
+    print(f"\n处理完成! 共处理 {len(frames)} 帧图像。")
     if video_writer is not None:
         video_writer.release()
-
-    print(f"\nDone! Frames saved to: {output_dir}")
-
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="从左右拼接 RGB/Alpha 视频中提取帧，支持可选背景混合与视频合成")
+    parser = argparse.ArgumentParser(description="从带通道mp4、VAP视频、SVGA、GIF等动画文件中提取帧，支持加水印、支持背景图混合，合成标准mp4视频")
     parser.add_argument("input_type", help="输入媒体文件类型", choices=["mp4","vap","svga","gif"])
     parser.add_argument("input_path", help="输入媒体文件路径")
     parser.add_argument("output_folder", help="输出文件夹")
@@ -790,8 +792,8 @@ if __name__ == "__main__":
             convert_video(
                 args.input_path,
                 args.output_folder,
-                mix_bg_path=args.mix_bg_path,
                 output_video_path=args.output_video_path,
+                mix_bg_path=args.mix_bg_path,
                 wm_text=args.wm_text,
                 wm_logo=args.wm_logo,
                 wm_font_scale=args.wm_font_scale,
@@ -801,8 +803,8 @@ if __name__ == "__main__":
             asyncio.run(convert_svga(
                 args.input_path,
                 args.output_folder,
-                mix_bg_path=args.mix_bg_path,
                 output_video_path=args.output_video_path,
+                mix_bg_path=args.mix_bg_path,
                 wm_text=args.wm_text,
                 wm_logo=args.wm_logo,
                 wm_font_scale=args.wm_font_scale,
@@ -812,8 +814,8 @@ if __name__ == "__main__":
             convert_gif(
                 args.input_path,
                 args.output_folder,
-                mix_bg_path=args.mix_bg_path,
                 output_video_path=args.output_video_path,
+                mix_bg_path=args.mix_bg_path,
                 wm_text=args.wm_text,
                 wm_logo=args.wm_logo,
                 wm_font_scale=args.wm_font_scale,
@@ -821,10 +823,13 @@ if __name__ == "__main__":
             )
 
 
-"""usage
-python alphaVideo2png.py gif 5.gif test_gif_out --mix_bg_path=bg.jpg --output_video_path=./test_gif_out/gif2video.mp4 --wm_text="元子星科技 出品" --wm_logo=logo.png --wm_font_scale=0.5
+"""__summary__
+# gif转mp4，加水印、背景图等功能示例：
+python convert2video.py gif 5.gif gif2mp4 --mix_bg_path=bg.jpg --output_video_path=gif2mp4.mp4 --wm_text="元子星科技 出品" --wm_logo=logo.png --wm_font_scale=0.5
 
-python alphaVideo2png.py svga 3.svga test_svga_out --mix_bg_path=bg.jpg --output_video_path=./test_svga_out/out.mp4 --wm_text="元子星科技 出品" --wm_logo=logo.png --wm_font_scale=0.5
+# svga转mp4，加水印、背景图等功能示例：
+python convert2video.py svga 3.svga svga2mp4 --mix_bg_path=bg.jpg --output_video_path=svga2mp4.mp4 --wm_text="元子星科技 出品" --wm_logo=logo.png --wm_font_scale=0.5
 
-python alphaVideo2png.py mp4 1.mp4 out_dir --mix_bg_path=bg.jpg --output_video_path=./out_dir/out.mp4 --wm_text="元子星科技 出品" --wm_logo=logo.png --wm_font_scale=0.5
+# 带通道mp4转标准mp4，加水印、背景图等功能示例：
+python convert2video.py mp4 1.mp4 video2mp4 --mix_bg_path=bg.jpg --output_video_path=video2mp4.mp4 --wm_text="元子星科技 出品" --wm_logo=logo.png --wm_font_scale=0.5
 """
