@@ -16,6 +16,9 @@ local.properties
 .settings/
 .loadpath
 
+ani2d/output/
+ani2d/tmp/
+
 # External tool builders
 .externalToolBuilders/
 
