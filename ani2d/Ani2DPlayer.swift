@@ -12,11 +12,11 @@ public typealias A2DPlatformImage = NSImage
 #error("A2D requires UIKit or AppKit")
 #endif
 
-public struct A2DFrame: Decodable, Sendable {
+// MARK: - JSON Models (VERSION=2)
+
+public struct A2DFrameInfo: Decodable, Sendable {
     public let index: Int
     public let name: String?
-    public let state: String?
-    public let stateFrameIndex: Int?
     public let x: Int
     public let y: Int
     public let w: Int
@@ -24,39 +24,83 @@ public struct A2DFrame: Decodable, Sendable {
     public let durationMs: Int?
 }
 
-public struct A2DStateMachine: Decodable, Sendable {
-    public let name: String
-    public let frameIndices: [Int]
-    public let frameCount: Int?
-}
-
-public struct A2DAtlas: Decodable, Sendable {
+public struct A2DAtlasInfo: Decodable, Sendable {
     public let width: Int
     public let height: Int
     public let layout: String
     public let padding: Int?
+    public let byteSize: Int
 }
 
-public struct A2DMetadata: Decodable, Sendable {
-    public let type: String
-    public let version: Int
-    public let atlas: A2DAtlas
+public struct A2DStateInfo: Decodable, Sendable {
+    public let name: String
     public let fps: Int
     public let frameCount: Int
-    public let stateMachineCount: Int?
-    public let stateMachines: [A2DStateMachine]?
-    public let frames: [A2DFrame]
+    public let atlas: A2DAtlasInfo
+    public let frames: [A2DFrameInfo]
 }
 
-public struct A2DDecodedAsset: Sendable {
-    public let metadata: A2DMetadata
-    public let atlasData: Data
-    public let atlasImage: A2DPlatformImage
+public struct A2DFileMetadata: Decodable, Sendable {
+    public let type: String
+    public let version: Int
+    public let fps: Int
+    public let stateCount: Int
+    public let totalFrameCount: Int?
+    public let states: [A2DStateInfo]
+}
+
+// MARK: - Decoded State (frames lazily decoded from one state's atlas)
+
+public struct A2DDecodedState: Sendable {
+    public let stateName: String
     public let frames: [A2DPlatformImage]
     public let frameDurations: [TimeInterval]
-    public let orderedStateNames: [String]
-    public let stateFrameIndicesByName: [String: [Int]]
 }
+
+// MARK: - Asset (holds raw atlas PNG chunks; decodes per state on demand)
+
+/// Holds the parsed .a2d file. Atlas PNG data for each state is stored raw;
+/// frames are decoded from the atlas only when that state is first requested.
+/// Each state is decoded at most once per `load()` call.
+public final class A2DDecodedAsset: @unchecked Sendable {
+    public let metadata: A2DFileMetadata
+    public let orderedStateNames: [String]
+    let atlasDataByState: [String: Data]
+    private var decodedStateCache: [String: A2DDecodedState] = [:]
+
+    init(
+        metadata: A2DFileMetadata,
+        orderedStateNames: [String],
+        atlasDataByState: [String: Data]
+    ) {
+        self.metadata = metadata
+        self.orderedStateNames = orderedStateNames
+        self.atlasDataByState = atlasDataByState
+    }
+
+    /// Returns decoded frames for `stateName`, decoding from the atlas PNG on first call.
+    /// Subsequent calls for the same state return the cached result.
+    public func decodedState(for stateName: String) throws -> A2DDecodedState {
+        if let cached = decodedStateCache[stateName] {
+            return cached
+        }
+        guard let atlasData = atlasDataByState[stateName] else {
+            throw A2DError.stateNotFound(stateName)
+        }
+        guard let stateInfo = metadata.states.first(where: { $0.name == stateName }) else {
+            throw A2DError.stateNotFound(stateName)
+        }
+        let decoded = try A2DDecoder.decodeStateFrames(
+            atlasData: atlasData,
+            stateInfo: stateInfo,
+            fallbackFps: metadata.fps
+        )
+        decodedStateCache[stateName] = decoded
+        return decoded
+    }
+}
+
+// MARK: - Interaction (UIKit only)
 
 #if canImport(UIKit)
 public enum A2DInteractionType: String, Sendable {
@@ -83,6 +127,8 @@ public struct A2DInteractionEvent: Sendable {
 }
 #endif
 
+// MARK: - Errors
+
 public enum A2DError: Error, LocalizedError {
     case fileTooSmall
     case invalidMagic
@@ -92,6 +138,7 @@ public enum A2DError: Error, LocalizedError {
     case invalidAtlasCGImage
     case frameCropFailed(index: Int)
     case noFrames
+    case stateNotFound(String)
 
     public var errorDescription: String? {
         switch self {
@@ -117,94 +164,28 @@ public enum A2DError: Error, LocalizedError {
             )
         case .noFrames:
             return NSLocalizedString("a2d_error_no_frames", comment: "No playable frames in A2D")
+        case .stateNotFound(let name):
+            return String(
+                format: NSLocalizedString("a2d_error_state_not_found", comment: "State not found in A2D"),
+                name
+            )
         }
     }
 }
 
-public enum A2DDecoder {
-    private static let magic = Data([0x41, 0x4E, 0x49, 0x32, 0x44])
-    private static let headerSize = 18
+// MARK: - Decoder
 
-    private struct A2DStateNamesMetadata: Decodable {
-        let stateMachines: [A2DStateMachine]?
-    }
+public enum A2DDecoder {
+    private static let magic = Data([0x41, 0x4E, 0x49, 0x32, 0x44]) // "ANI2D"
+    // header: magic(5B) + version(1B) + stateCount(uint16LE) + jsonSize(uint32LE) = 12 bytes
+    private static let headerSize = 12
 
     public static func decode(fileURL: URL) throws -> A2DDecodedAsset {
         let data = try Data(contentsOf: fileURL)
         return try decode(data: data)
     }
 
-    public static func getStateNames(fileURL: URL) throws -> [String] {
-        let data = try Data(contentsOf: fileURL)
-        return try getStateNames(data: data)
-    }
-
-    public static func getStateNames(data: Data) throws -> [String] {
-        let (_, jsonData) = try readPayload(data: data)
-        let metadata = try JSONDecoder().decode(A2DStateNamesMetadata.self, from: jsonData)
-
-        let stateNames = metadata.stateMachines?
-            .map(\ .name)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty } ?? []
-
-        if !stateNames.isEmpty {
-            return stateNames
-        }
-        return ["default"]
-    }
-
     public static func decode(data: Data) throws -> A2DDecodedAsset {
-        let (atlasData, jsonData) = try readPayload(data: data)
-
-        let metadata = try JSONDecoder().decode(A2DMetadata.self, from: jsonData)
-
-        guard
-            let source = CGImageSourceCreateWithData(atlasData as CFData, nil),
-            let atlasCGImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
-        else {
-            throw A2DError.invalidAtlasImage
-        }
-        let atlasImage = makePlatformImage(from: atlasCGImage)
-
-        guard !metadata.frames.isEmpty else {
-            throw A2DError.noFrames
-        }
-
-        var frames: [A2DPlatformImage] = []
-        frames.reserveCapacity(metadata.frames.count)
-
-        for frame in metadata.frames {
-            let rect = CGRect(x: frame.x, y: frame.y, width: frame.w, height: frame.h)
-            guard let cropped = atlasCGImage.cropping(to: rect) else {
-                throw A2DError.frameCropFailed(index: frame.index)
-            }
-            let image = makePlatformImage(from: cropped)
-            frames.append(image)
-        }
-
-        let defaultDuration = max(0.001, 1.0 / Double(max(1, metadata.fps)))
-        let durations = metadata.frames.map { frame in
-            if let durationMs = frame.durationMs, durationMs > 0 {
-                return Double(durationMs) / 1000.0
-            }
-            return defaultDuration
-        }
-
-        let (orderedStateNames, stateFrameIndicesByName) = buildStateMap(metadata: metadata)
-
-        return A2DDecodedAsset(
-            metadata: metadata,
-            atlasData: atlasData,
-            atlasImage: atlasImage,
-            frames: frames,
-            frameDurations: durations,
-            orderedStateNames: orderedStateNames,
-            stateFrameIndicesByName: stateFrameIndicesByName
-        )
-    }
-
-    private static func readPayload(data: Data) throws -> (atlasData: Data, jsonData: Data) {
         guard data.count >= headerSize else {
             throw A2DError.fileTooSmall
         }
@@ -215,66 +196,135 @@ public enum A2DDecoder {
         }
 
         let version = data[5]
-        guard version == 1 else {
+        guard version == 2 else {
             throw A2DError.unsupportedVersion(version)
         }
 
-        let atlasSize = Int(try readUInt64LE(from: data, offset: 6))
-        let jsonSize = Int(try readUInt32LE(from: data, offset: 14))
-        let atlasStart = headerSize
-        let atlasEnd = atlasStart + atlasSize
-        let jsonEnd = atlasEnd + jsonSize
+        let stateCount = Int(try readUInt16LE(from: data, offset: 6))
+        let jsonSize = Int(try readUInt32LE(from: data, offset: 8))
 
+        let jsonStart = headerSize
+        let jsonEnd = jsonStart + jsonSize
         guard jsonEnd <= data.count else {
             throw A2DError.invalidPayloadLength
         }
 
-        let atlasData = data.subdata(in: atlasStart..<atlasEnd)
-        let jsonData = data.subdata(in: atlasEnd..<jsonEnd)
-        return (atlasData, jsonData)
+        let jsonData = data.subdata(in: jsonStart..<jsonEnd)
+        let metadata = try JSONDecoder().decode(A2DFileMetadata.self, from: jsonData)
+
+        guard metadata.states.count == stateCount else {
+            throw A2DError.invalidPayloadLength
+        }
+
+        // Advance past JSON, aligning to 8-byte boundary from start of file
+        var offset = jsonEnd
+        offset += alignPadLen(offset)
+
+        var atlasDataByState: [String: Data] = [:]
+        var orderedStateNames: [String] = []
+
+        for stateInfo in metadata.states {
+            let byteSize = stateInfo.atlas.byteSize
+            guard byteSize > 0 else {
+                throw A2DError.invalidPayloadLength
+            }
+            let chunkEnd = offset + byteSize
+            guard chunkEnd <= data.count else {
+                throw A2DError.invalidPayloadLength
+            }
+            atlasDataByState[stateInfo.name] = data.subdata(in: offset..<chunkEnd)
+            orderedStateNames.append(stateInfo.name)
+            // Advance by byteSize then pad to next 8-byte alignment
+            offset = chunkEnd + alignPadLen(byteSize)
+        }
+
+        return A2DDecodedAsset(
+            metadata: metadata,
+            orderedStateNames: orderedStateNames,
+            atlasDataByState: atlasDataByState
+        )
     }
 
-    private static func buildStateMap(metadata: A2DMetadata) -> ([String], [String: [Int]]) {
-        let frameCount = metadata.frames.count
+    public static func getStateNames(fileURL: URL) throws -> [String] {
+        let data = try Data(contentsOf: fileURL)
+        return try getStateNames(data: data)
+    }
 
-        if let stateMachines = metadata.stateMachines, !stateMachines.isEmpty {
-            var orderedNames: [String] = []
-            var map: [String: [Int]] = [:]
+    public static func getStateNames(data: Data) throws -> [String] {
+        guard data.count >= headerSize else {
+            throw A2DError.fileTooSmall
+        }
+        let magic = data.subdata(in: 0..<5)
+        guard magic == self.magic else {
+            throw A2DError.invalidMagic
+        }
+        let version = data[5]
+        guard version == 2 else {
+            throw A2DError.unsupportedVersion(version)
+        }
+        let jsonSize = Int(try readUInt32LE(from: data, offset: 8))
+        let jsonEnd = headerSize + jsonSize
+        guard jsonEnd <= data.count else {
+            throw A2DError.invalidPayloadLength
+        }
+        let jsonData = data.subdata(in: headerSize..<jsonEnd)
 
-            for sm in stateMachines {
-                let filtered = sm.frameIndices.filter { $0 >= 0 && $0 < frameCount }
-                guard !filtered.isEmpty else {
-                    continue
-                }
-                orderedNames.append(sm.name)
-                map[sm.name] = filtered
-            }
+        struct QuickMeta: Decodable {
+            struct StateInfo: Decodable { let name: String }
+            let states: [StateInfo]
+        }
+        let meta = try JSONDecoder().decode(QuickMeta.self, from: jsonData)
+        let names = meta.states
+            .map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return names.isEmpty ? ["default"] : names
+    }
 
-            if !orderedNames.isEmpty {
-                return (orderedNames, map)
-            }
+    /// Decodes all frames for a single state from its atlas PNG bytes.
+    /// Called lazily by `A2DDecodedAsset.decodedState(for:)`.
+    static func decodeStateFrames(
+        atlasData: Data,
+        stateInfo: A2DStateInfo,
+        fallbackFps: Int
+    ) throws -> A2DDecodedState {
+        guard
+            let source = CGImageSourceCreateWithData(atlasData as CFData, nil),
+            let atlasCGImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else {
+            throw A2DError.invalidAtlasImage
         }
 
-        var orderedNames: [String] = []
-        var map: [String: [Int]] = [:]
-        for (idx, frame) in metadata.frames.enumerated() {
-            guard let raw = frame.state, !raw.isEmpty else {
-                continue
-            }
-            if map[raw] == nil {
-                orderedNames.append(raw)
-                map[raw] = []
-            }
-            map[raw, default: []].append(idx)
+        guard !stateInfo.frames.isEmpty else {
+            throw A2DError.noFrames
         }
 
-        if !orderedNames.isEmpty {
-            return (orderedNames, map)
+        var frames: [A2DPlatformImage] = []
+        frames.reserveCapacity(stateInfo.frames.count)
+
+        for frameInfo in stateInfo.frames {
+            let rect = CGRect(x: frameInfo.x, y: frameInfo.y, width: frameInfo.w, height: frameInfo.h)
+            guard let cropped = atlasCGImage.cropping(to: rect) else {
+                throw A2DError.frameCropFailed(index: frameInfo.index)
+            }
+            frames.append(makePlatformImage(from: cropped))
         }
 
-        let fallback = "default"
-        let all = Array(0..<frameCount)
-        return ([fallback], [fallback: all])
+        let effectiveFps = stateInfo.fps > 0 ? stateInfo.fps : max(1, fallbackFps)
+        let defaultDuration = max(0.001, 1.0 / Double(effectiveFps))
+        let durations: [TimeInterval] = stateInfo.frames.map { frame in
+            if let ms = frame.durationMs, ms > 0 { return Double(ms) / 1000.0 }
+            return defaultDuration
+        }
+
+        return A2DDecodedState(stateName: stateInfo.name, frames: frames, frameDurations: durations)
+    }
+
+    // MARK: Helpers
+
+    /// Returns the number of padding bytes needed to align `n` to 8 bytes.
+    /// Matches Python's `(-n) % 8`.
+    private static func alignPadLen(_ n: Int, alignment: Int = 8) -> Int {
+        return (alignment - n % alignment) % alignment
     }
 
     private static func makePlatformImage(from cgImage: CGImage) -> A2DPlatformImage {
@@ -285,28 +335,17 @@ public enum A2DDecoder {
         #endif
     }
 
-    private static func readUInt32LE(from data: Data, offset: Int) throws -> UInt32 {
-        let end = offset + 4
-        guard end <= data.count else {
-            throw A2DError.fileTooSmall
-        }
-        let b0 = UInt32(data[offset])
-        let b1 = UInt32(data[offset + 1]) << 8
-        let b2 = UInt32(data[offset + 2]) << 16
-        let b3 = UInt32(data[offset + 3]) << 24
-        return b0 | b1 | b2 | b3
+    private static func readUInt16LE(from data: Data, offset: Int) throws -> UInt16 {
+        guard offset + 2 <= data.count else { throw A2DError.fileTooSmall }
+        return UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
     }
 
-    private static func readUInt64LE(from data: Data, offset: Int) throws -> UInt64 {
-        let end = offset + 8
-        guard end <= data.count else {
-            throw A2DError.fileTooSmall
-        }
-        var value: UInt64 = 0
-        for i in 0..<8 {
-            value |= UInt64(data[offset + i]) << UInt64(i * 8)
-        }
-        return value
+    private static func readUInt32LE(from data: Data, offset: Int) throws -> UInt32 {
+        guard offset + 4 <= data.count else { throw A2DError.fileTooSmall }
+        return UInt32(data[offset])
+            | (UInt32(data[offset + 1]) << 8)
+            | (UInt32(data[offset + 2]) << 16)
+            | (UInt32(data[offset + 3]) << 24)
     }
 }
 
@@ -325,6 +364,7 @@ public final class A2DPlayerView: UIView {
     }
 
     private let imageView = UIImageView()
+    private var currentDecodedState: A2DDecodedState?
     private var currentFrameIndex = 0
     private var scheduledWork: DispatchWorkItem?
     private var playbackFrameIndices: [Int] = []
@@ -397,7 +437,7 @@ public final class A2DPlayerView: UIView {
         guard asset != nil else {
             return
         }
-        if playbackFrameIndices.isEmpty {
+        if playbackFrameIndices.isEmpty || currentDecodedState == nil {
             _ = selectState(nil, restart: true)
         }
         guard !playbackFrameIndices.isEmpty else {
@@ -462,37 +502,26 @@ public final class A2DPlayerView: UIView {
             return false
         }
 
-        let normalizedStateName: String?
-        if let stateName {
-            let trimmed = stateName.trimmingCharacters(in: .whitespacesAndNewlines)
-            normalizedStateName = trimmed.isEmpty ? nil : trimmed
-        } else {
-            normalizedStateName = nil
-        }
+        let trimmed = stateName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedStateName: String? = (trimmed?.isEmpty == false) ? trimmed : nil
 
         let selectedName: String
-        let selectedIndices: [Int]
-
-        if
-            let stateName = normalizedStateName,
-            let indices = asset.stateFrameIndicesByName[stateName],
-            !indices.isEmpty
-        {
-            selectedName = stateName
-            selectedIndices = indices
-        } else if
-            let first = asset.orderedStateNames.first,
-            let indices = asset.stateFrameIndicesByName[first],
-            !indices.isEmpty
-        {
+        if let name = normalizedStateName, asset.orderedStateNames.contains(name) {
+            selectedName = name
+        } else if let first = asset.orderedStateNames.first {
             selectedName = first
-            selectedIndices = indices
         } else {
-            selectedName = "default"
-            selectedIndices = Array(asset.frames.indices)
+            return false
         }
 
-        playbackFrameIndices = selectedIndices
+        do {
+            currentDecodedState = try asset.decodedState(for: selectedName)
+        } catch {
+            return false
+        }
+
+        let frameCount = currentDecodedState?.frames.count ?? 0
+        playbackFrameIndices = frameCount > 0 ? Array(0..<frameCount) : []
         currentStateName = selectedName
 
         if restart || currentFrameIndex >= playbackFrameIndices.count {
@@ -532,35 +561,35 @@ public final class A2DPlayerView: UIView {
     private func apply(asset: A2DDecodedAsset) {
         pause()
         self.asset = asset
+        currentDecodedState = nil
         lastSingleTapEventTime = nil
         _ = selectState(nil, restart: true)
 
         if
             automaticallySizesToContent,
-            let firstIndex = playbackFrameIndices.first,
-            asset.frames.indices.contains(firstIndex)
+            let decodedState = currentDecodedState,
+            !decodedState.frames.isEmpty
         {
-            let firstFrame = asset.frames[firstIndex]
-            bounds.size = firstFrame.size
+            bounds.size = decodedState.frames[0].size
         }
     }
 
     private func render(frameAt index: Int) {
         guard
-            let asset,
+            let decodedState = currentDecodedState,
             playbackFrameIndices.indices.contains(index)
         else {
             return
         }
         let frameIndex = playbackFrameIndices[index]
-        guard asset.frames.indices.contains(frameIndex) else {
+        guard decodedState.frames.indices.contains(frameIndex) else {
             return
         }
-        imageView.image = asset.frames[frameIndex]
+        imageView.image = decodedState.frames[frameIndex]
     }
 
     private func scheduleNextFrame() {
-        guard isPlaying, let asset else {
+        guard isPlaying, let _ = asset, let decodedState = currentDecodedState else {
             return
         }
         guard !playbackFrameIndices.isEmpty else {
@@ -569,9 +598,11 @@ public final class A2DPlayerView: UIView {
         }
 
         let actualFrameIndex = playbackFrameIndices[currentFrameIndex]
-        let delay = asset.frameDurations[actualFrameIndex]
+        let delay = decodedState.frameDurations[actualFrameIndex]
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.isPlaying, let _ = self.asset else {
+            guard let self, self.isPlaying,
+                  let _ = self.asset,
+                  let decodedState = self.currentDecodedState else {
                 return
             }
             guard !self.playbackFrameIndices.isEmpty else {
@@ -596,6 +627,7 @@ public final class A2DPlayerView: UIView {
             self.render(frameAt: self.currentFrameIndex)
             self.scheduleNextFrame()
         }
+        _ = decodedState  // suppress unused warning; delay already captured
 
         scheduledWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)

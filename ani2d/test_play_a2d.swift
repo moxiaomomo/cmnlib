@@ -46,8 +46,16 @@ struct TestPlayA2D {
         do {
             let decoded = try A2DDecoder.decode(fileURL: url)
             print("[test_play_a2d] decode ok")
-            print("[test_play_a2d] frameCount=\(decoded.metadata.frameCount), atlas=\(decoded.metadata.atlas.width)x\(decoded.metadata.atlas.height)")
-            print("[test_play_a2d] firstDuration=\(decoded.frameDurations.first ?? 0)")
+            print("[test_play_a2d] stateCount=\(decoded.metadata.stateCount), totalFrameCount=\(decoded.metadata.totalFrameCount ?? 0)")
+            print("[test_play_a2d] orderedStateNames=\(decoded.orderedStateNames)")
+            if let firstStateInfo = decoded.metadata.states.first {
+                print("[test_play_a2d] firstState=\(firstStateInfo.name), frameCount=\(firstStateInfo.frameCount), atlas=\(firstStateInfo.atlas.width)x\(firstStateInfo.atlas.height)")
+            }
+            // Verify lazy decode for each state
+            for stateName in decoded.orderedStateNames {
+                let decodedState = try decoded.decodedState(for: stateName)
+                print("[test_play_a2d] state '\(stateName)': frames=\(decodedState.frames.count), firstDuration=\(decodedState.frameDurations.first ?? 0)")
+            }
         } catch {
             print("[test_play_a2d] decode failed: \(error.localizedDescription)")
             exit(2)
