@@ -219,6 +219,85 @@ def _split_csv_values(value: str) -> List[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
+def _expand_pattern_sequence(pattern: str) -> List[str]:
+    """
+    扩展 %Nd 格式的文件序列模式。
+    例如: "folder/img_%03d.png" -> ["folder/img_000.png", "folder/img_001.png", ...]
+    查找从 0 开始连续的文件，直到某个编号的文件不存在。
+    """
+    import re
+    
+    match = re.search(r'%(\d*)d', pattern)
+    if not match:
+        # 不是 %d 格式，直接作为单个文件返回
+        return [pattern]
+    
+    # 提取宽度（若为空则默认为 1）
+    width_str = match.group(1)
+    width = int(width_str) if width_str else 1
+    
+    # 构造 glob 模式来查找所有匹配的文件
+    glob_pattern = re.sub(r'%\d*d', '*', pattern)
+    from pathlib import Path
+    import glob as glob_module
+    
+    # 使用 glob 查找所有匹配文件
+    matched_files = glob_module.glob(glob_pattern)
+    
+    if not matched_files:
+        # 没有找到任何文件，尝试用顺序号直接查找
+        # 这样可以支持不是通过 glob 能找到的情况
+        result: List[str] = []
+        idx = 0
+        while True:
+            formatted = pattern % (idx,)
+            if not Path(formatted).exists():
+                break
+            result.append(formatted)
+            idx += 1
+        if result:
+            return result
+        else:
+            raise ValueError(f"未找到匹配 {pattern} 的文件序列")
+    
+    # 将匹配的文件按照格式化后的编号排序
+    # 提取每个文件对应的数字
+    def extract_number(filepath: str) -> tuple[int | None, str]:
+        basename = Path(filepath).name
+        # 试图从文件名中提取对应的数字
+        pattern_name = Path(pattern).name
+        # 构造正则表达式：将 %Nd 替换成数字捕获组
+        test_pattern = pattern_name.replace('%' + width_str + 'd', '(\\d+)')
+        test_match = re.search(test_pattern, basename)
+        if test_match:
+            return (int(test_match.group(1)), filepath)
+        return (None, filepath)
+    
+    # 排序：优先按编号，如果无法提取则按字母顺序
+    numbered = [extract_number(f) for f in matched_files]
+    numbered_sort = sorted(numbered, key=lambda x: (x[0] is None, x[0], x[1]))
+    return [path for _, path in numbered_sort]
+
+
+def _split_csv_values(value: str) -> List[str]:
+    """
+    分割逗号分隔的值，支持 %Nd 格式的序列扩展。
+    """
+    parts = [v.strip() for v in value.split(",") if v.strip()]
+    result: List[str] = []
+    for part in parts:
+        if '%' in part and 'd' in part:
+            # 尝试作为 %Nd 格式展开
+            try:
+                result.extend(_expand_pattern_sequence(part))
+            except ValueError:
+                # 如果展开失败，作为字面文件处理
+                result.append(part)
+        else:
+            result.append(part)
+    return result
+
+
 def _parse_state_input_groups(input_imgs: List[str], state_names: List[str]) -> List[List[str]]:
     if not input_imgs:
         raise ValueError("--inputImgs 至少提供一张 PNG")
