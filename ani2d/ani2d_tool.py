@@ -18,6 +18,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,7 +53,9 @@ def _state_dir_name(name: str) -> str:
 @dataclass
 class Ani2dStateData:
     name: str
-    atlas_image: Image.Image
+    storage: str
+    atlas_image: Optional[Image.Image]
+    raw_frames: Optional[List[Image.Image]]
     frames: List[Dict[str, Any]]
     bgm_data: Optional[bytes] = None
     bgm_codec: Optional[str] = None
@@ -69,6 +72,91 @@ def _load_png(path: Path) -> Image.Image:
     if path.suffix.lower() != ".png":
         raise ValueError(f"仅支持 PNG: {path}")
     return Image.open(path).convert("RGBA")
+
+
+def _trim_transparent_border(image: Image.Image) -> Tuple[Image.Image, Dict[str, int]]:
+    bbox = image.getbbox()
+    source_w, source_h = image.size
+    if bbox is None:
+        # 全透明图至少保留 1x1，避免后续编码异常
+        trimmed = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+        return trimmed, {
+            "sourceW": source_w,
+            "sourceH": source_h,
+            "offsetX": 0,
+            "offsetY": 0,
+        }
+
+    left, top, right, bottom = bbox
+    trimmed = image.crop(bbox)
+    return trimmed, {
+        "sourceW": source_w,
+        "sourceH": source_h,
+        "offsetX": left,
+        "offsetY": top,
+    }
+
+
+def _restore_trimmed_frame(frame_image: Image.Image, frame_meta: Dict[str, Any]) -> Image.Image:
+    source_w = int(frame_meta.get("sourceW", frame_image.width))
+    source_h = int(frame_meta.get("sourceH", frame_image.height))
+    offset_x = int(frame_meta.get("offsetX", 0))
+    offset_y = int(frame_meta.get("offsetY", 0))
+
+    if (
+        source_w == frame_image.width
+        and source_h == frame_image.height
+        and offset_x == 0
+        and offset_y == 0
+    ):
+        return frame_image
+
+    canvas = Image.new("RGBA", (max(1, source_w), max(1, source_h)), (0, 0, 0, 0))
+    canvas.paste(frame_image, (offset_x, offset_y))
+    return canvas
+
+
+def _optimize_png_bytes(png_bytes: bytes, optimize_mode: str) -> Tuple[bytes, Optional[str]]:
+    if optimize_mode == "none":
+        return png_bytes, None
+
+    pngquant_path = shutil.which("pngquant")
+    if not pngquant_path:
+        return png_bytes, None
+
+    with tempfile.TemporaryDirectory(prefix="ani2d_pngquant_") as tmp_dir_name:
+        tmp_dir = Path(tmp_dir_name)
+        input_path = tmp_dir / "input.png"
+        output_path = tmp_dir / "output.png"
+        input_path.write_bytes(png_bytes)
+
+        try:
+            proc = subprocess.run(
+                [
+                    pngquant_path,
+                    "--force",
+                    "--skip-if-larger",
+                    "--speed",
+                    "1",
+                    "--quality",
+                    "55-95",
+                    "--output",
+                    str(output_path),
+                    str(input_path),
+                ],
+                capture_output=True,
+                check=False,
+            )
+        except Exception:
+            return png_bytes, None
+
+        if proc.returncode not in (0, 98) or not output_path.exists():
+            return png_bytes, None
+
+        optimized = output_path.read_bytes()
+        if len(optimized) < len(png_bytes):
+            return optimized, "pngquant"
+        return png_bytes, None
 
 
 def _next_power_of_two(v: int) -> int:
@@ -208,6 +296,55 @@ def _build_single_state_atlas(
         "frames": frames,
     }
     return atlas, meta
+
+
+def _build_single_state_raw(
+    state_name: str,
+    images: List[Image.Image],
+    names: List[str],
+    durations_ms: List[int],
+    fps: int,
+) -> Tuple[List[bytes], Dict[str, Any]]:
+    if not images:
+        raise ValueError(f"状态 {state_name} 没有输入图片")
+    if len(images) != len(durations_ms):
+        raise ValueError(f"状态 {state_name} durations 数量与帧数不一致")
+
+    frame_bytes: List[bytes] = []
+    frames: List[Dict[str, Any]] = []
+    for idx, img in enumerate(images):
+        frame_io = io.BytesIO()
+        img.save(frame_io, format="PNG")
+        png_bytes = frame_io.getvalue()
+        frame_bytes.append(png_bytes)
+
+        frames.append(
+            {
+                "index": idx,
+                "name": names[idx],
+                "w": img.width,
+                "h": img.height,
+                "durationMs": int(durations_ms[idx]),
+                "byteSize": len(png_bytes),
+            }
+        )
+
+    meta = {
+        "name": state_name,
+        "fps": int(fps),
+        "frameCount": len(frames),
+        "storage": "raw",
+        "frames": frames,
+    }
+    return frame_bytes, meta
+
+
+def _packed_chunk_size(chunks: List[bytes]) -> int:
+    total = 0
+    for chunk in chunks:
+        total += len(chunk)
+        total += _align_pad_len(len(chunk))
+    return total
 
 
 def _parse_state_names(state_names_raw: Optional[str]) -> List[str]:
@@ -362,12 +499,21 @@ def ani2dEncode(
     base_dir: Path,
     state_names_raw: Optional[str] = None,
     bgms_raw: Optional[str] = None,
+    ani_file: Optional[str] = None,
+    size_mode: str = "auto",
+    atlas_optimize: str = "auto",
+    trim_transparent: bool = True,
     fps: int = 10,
     durations_ms: Optional[List[int]] = None,
     padding: int = 0,
     max_atlas_width: Optional[int] = None,
     max_atlas_height: Optional[int] = None,
 ) -> Path:
+    if size_mode not in {"auto", "atlas", "raw"}:
+        raise ValueError("size_mode 仅支持: auto, atlas, raw")
+    if atlas_optimize not in {"auto", "none", "pngquant"}:
+        raise ValueError("atlas_optimize 仅支持: auto, none, pngquant")
+
     state_names = _parse_state_names(state_names_raw)
     grouped_inputs = _parse_state_input_groups(input_imgs, state_names)
     bgm_mapping = _parse_bgms(bgms_raw, state_names)
@@ -379,7 +525,10 @@ def ani2dEncode(
     tmp_dir = base_dir / "tmp"
     out_dir = base_dir / "output"
     json_path = tmp_dir / f"{unique_id}.json"
-    a2d_path = out_dir / "out.a2d"
+    if ani_file is not None and ani_file.strip():
+        a2d_path = Path(ani_file).expanduser().resolve()
+    else:
+        a2d_path = out_dir / "out.a2d"
     ensure_parent(json_path)
     ensure_parent(a2d_path)
 
@@ -392,14 +541,32 @@ def ani2dEncode(
             if not p.exists():
                 raise FileNotFoundError(f"输入图片不存在: {p}")
 
-        images = [_load_png(p) for p in img_paths]
+        source_images = [_load_png(p) for p in img_paths]
         names = [p.name for p in img_paths]
+
+        images: List[Image.Image] = []
+        trim_infos: List[Dict[str, int]] = []
+        for image in source_images:
+            if trim_transparent:
+                trimmed, trim_info = _trim_transparent_border(image)
+                images.append(trimmed)
+                trim_infos.append(trim_info)
+            else:
+                images.append(image)
+                trim_infos.append(
+                    {
+                        "sourceW": image.width,
+                        "sourceH": image.height,
+                        "offsetX": 0,
+                        "offsetY": 0,
+                    }
+                )
 
         state_frame_count = len(images)
         state_durations = flat_durations[duration_offset:duration_offset + state_frame_count]
         duration_offset += state_frame_count
 
-        atlas_image, state_meta = _build_single_state_atlas(
+        atlas_image, atlas_state_meta = _build_single_state_atlas(
             state_name=state_name,
             images=images,
             names=names,
@@ -417,9 +584,41 @@ def ani2dEncode(
         atlas_io = io.BytesIO()
         atlas_image.save(atlas_io, format="PNG")
         atlas_bytes = atlas_io.getvalue()
+        atlas_bytes, atlas_optimized_by = _optimize_png_bytes(atlas_bytes, atlas_optimize)
+        if atlas_optimized_by is not None:
+            atlas_tmp_path.write_bytes(atlas_bytes)
+        atlas_state_meta["atlas"]["byteSize"] = len(atlas_bytes)
+        atlas_state_meta["atlas"]["tmpFile"] = str(atlas_tmp_path)
+        atlas_state_meta["atlas"]["optimizedBy"] = atlas_optimized_by
+        atlas_state_meta["storage"] = "atlas"
 
-        state_meta["atlas"]["byteSize"] = len(atlas_bytes)
-        state_meta["atlas"]["tmpFile"] = str(atlas_tmp_path)
+        for frame_meta, trim_info in zip(atlas_state_meta["frames"], trim_infos):
+            frame_meta.update(trim_info)
+
+        raw_frame_bytes, raw_state_meta = _build_single_state_raw(
+            state_name=state_name,
+            images=images,
+            names=names,
+            durations_ms=state_durations,
+            fps=fps,
+        )
+        for frame_meta, trim_info in zip(raw_state_meta["frames"], trim_infos):
+            frame_meta.update(trim_info)
+
+        chosen_storage = size_mode
+        if size_mode == "auto":
+            atlas_packed = _packed_chunk_size([atlas_bytes])
+            raw_packed = _packed_chunk_size(raw_frame_bytes)
+            chosen_storage = "raw" if raw_packed < atlas_packed else "atlas"
+
+        if chosen_storage == "raw":
+            visual_chunks = raw_frame_bytes
+            state_meta = raw_state_meta
+            storage_note = "raw-frames"
+        else:
+            visual_chunks = [atlas_bytes]
+            state_meta = atlas_state_meta
+            storage_note = "atlas"
 
         bgm_path = bgm_mapping.get(state_name)
         bgm_bytes: Optional[bytes] = None
@@ -437,11 +636,12 @@ def ani2dEncode(
         state_assets.append(
             {
                 "name": state_name,
-                "atlasImage": atlas_image,
-                "atlasBytes": atlas_bytes,
+                "visualChunks": visual_chunks,
+                "storage": state_meta.get("storage", "atlas"),
                 "bgmBytes": bgm_bytes,
                 "meta": state_meta,
                 "atlasTmpPath": str(atlas_tmp_path),
+                "storageNote": storage_note,
             }
         )
 
@@ -450,9 +650,12 @@ def ani2dEncode(
         "version": VERSION,
         "packing": {
             "alignment": ALIGNMENT,
-            "layout": "header+json+state_chunks(atlas+optional_bgm)",
+            "layout": "header+json+state_chunks(visual+optional_bgm)",
         },
         "fps": int(fps),
+        "sizeMode": size_mode,
+        "trimTransparent": bool(trim_transparent),
+        "atlasOptimize": atlas_optimize,
         "stateCount": len(state_assets),
         "totalFrameCount": total_frames,
         "states": [asset["meta"] for asset in state_assets],
@@ -473,11 +676,11 @@ def ani2dEncode(
             f.write(b"\x00" * json_pad)
 
         for asset in state_assets:
-            atlas_bytes = asset["atlasBytes"]
-            f.write(atlas_bytes)
-            chunk_pad = _align_pad_len(len(atlas_bytes))
-            if chunk_pad:
-                f.write(b"\x00" * chunk_pad)
+            for visual_chunk in asset["visualChunks"]:
+                f.write(visual_chunk)
+                chunk_pad = _align_pad_len(len(visual_chunk))
+                if chunk_pad:
+                    f.write(b"\x00" * chunk_pad)
 
             bgm_bytes = asset.get("bgmBytes")
             if bgm_bytes:
@@ -488,7 +691,7 @@ def ani2dEncode(
 
     print(f"[ani2dEncode] json : {json_path}")
     for asset in state_assets:
-        print(f"[ani2dEncode] state atlas ({asset['name']}): {asset['atlasTmpPath']}")
+        print(f"[ani2dEncode] state {asset['storageNote']} ({asset['name']}): {asset['atlasTmpPath']}")
         if asset.get("bgmBytes") is not None:
             print(f"[ani2dEncode] state bgm   ({asset['name']}): {asset['meta']['bgm']['fileName']}")
     print(f"[ani2dEncode] a2d : {a2d_path}")
@@ -527,20 +730,39 @@ def _read_ani2d(ani_file: Path) -> Ani2dData:
     states: Dict[str, Ani2dStateData] = {}
     for st in states_meta:
         st_name = str(st.get("name", "default"))
-        atlas_meta = st.get("atlas", {})
-        byte_size = int(atlas_meta.get("byteSize", 0))
-        if byte_size <= 0:
-            raise ValueError(f"非法 .a2d: 状态 {st_name} 的 atlas byteSize 无效")
+        storage = str(st.get("storage", "atlas"))
+        frames = st.get("frames", [])
 
-        end = offset + byte_size
-        if end > len(raw):
-            raise ValueError(f"非法 .a2d: 状态 {st_name} 的 atlas 数据不完整")
+        atlas_img: Optional[Image.Image] = None
+        raw_frame_images: Optional[List[Image.Image]] = None
 
-        atlas_bytes = raw[offset:end]
-        atlas_img = Image.open(io.BytesIO(atlas_bytes)).convert("RGBA")
+        if storage == "raw":
+            raw_frame_images = []
+            for frame in frames:
+                frame_size = int(frame.get("byteSize", 0))
+                if frame_size <= 0:
+                    raise ValueError(f"非法 .a2d: 状态 {st_name} 的 raw frame byteSize 无效")
+                end = offset + frame_size
+                if end > len(raw):
+                    raise ValueError(f"非法 .a2d: 状态 {st_name} 的 raw frame 数据不完整")
+                frame_bytes = raw[offset:end]
+                raw_frame_images.append(Image.open(io.BytesIO(frame_bytes)).convert("RGBA"))
+                offset = end
+                offset += _align_pad_len(frame_size)
+        else:
+            atlas_meta = st.get("atlas", {})
+            byte_size = int(atlas_meta.get("byteSize", 0))
+            if byte_size <= 0:
+                raise ValueError(f"非法 .a2d: 状态 {st_name} 的 atlas byteSize 无效")
 
-        offset = end
-        offset += _align_pad_len(byte_size)
+            end = offset + byte_size
+            if end > len(raw):
+                raise ValueError(f"非法 .a2d: 状态 {st_name} 的 atlas 数据不完整")
+
+            atlas_bytes = raw[offset:end]
+            atlas_img = Image.open(io.BytesIO(atlas_bytes)).convert("RGBA")
+            offset = end
+            offset += _align_pad_len(byte_size)
 
         bgm_bytes: Optional[bytes] = None
         bgm_codec: Optional[str] = None
@@ -558,10 +780,11 @@ def _read_ani2d(ani_file: Path) -> Ani2dData:
                 offset = bgm_end
                 offset += _align_pad_len(bgm_size)
 
-        frames = st.get("frames", [])
         states[st_name] = Ani2dStateData(
             name=st_name,
+            storage=storage,
             atlas_image=atlas_img,
+            raw_frames=raw_frame_images,
             frames=frames,
             bgm_data=bgm_bytes,
             bgm_codec=bgm_codec,
@@ -589,9 +812,10 @@ def ani2dDecode(
     state_atlas_paths: Dict[str, str] = {}
     state_bgm_paths: Dict[str, str] = {}
     for state_name, st_data in data.states.items():
-        atlas_out = tmp_dir / f"decoded_{unique_id}_{_state_dir_name(state_name)}.png"
-        st_data.atlas_image.save(atlas_out, format="PNG")
-        state_atlas_paths[state_name] = str(atlas_out)
+        if st_data.storage == "atlas" and st_data.atlas_image is not None:
+            atlas_out = tmp_dir / f"decoded_{unique_id}_{_state_dir_name(state_name)}.png"
+            st_data.atlas_image.save(atlas_out, format="PNG")
+            state_atlas_paths[state_name] = str(atlas_out)
 
         if st_data.bgm_data is not None:
             ext = st_data.bgm_codec or "mp3"
@@ -632,7 +856,22 @@ def _export_frames(data: Ani2dData, frames_dir: Path) -> List[str]:
         state_dir = frames_dir / _state_dir_name(state_name)
         state_dir.mkdir(parents=True, exist_ok=True)
 
+        if st_data.storage == "raw":
+            raw_frames = st_data.raw_frames or []
+            for idx, frame_img in enumerate(raw_frames):
+                frame_meta = st_data.frames[idx] if idx < len(st_data.frames) else {}
+                name = frame_meta.get("name") or f"frame_{idx:04d}.png"
+                out_path = state_dir / name
+                if out_path.exists():
+                    out_path = state_dir / f"{idx:04d}_{name}"
+                restored = _restore_trimmed_frame(frame_img, frame_meta)
+                restored.save(out_path, format="PNG")
+                out_files.append(str(out_path))
+            continue
+
         for frame in st_data.frames:
+            if st_data.atlas_image is None:
+                continue
             x = int(frame["x"])
             y = int(frame["y"])
             w = int(frame["w"])
@@ -641,10 +880,11 @@ def _export_frames(data: Ani2dData, frames_dir: Path) -> List[str]:
             name = frame.get("name") or f"frame_{idx:04d}.png"
 
             crop = st_data.atlas_image.crop((x, y, x + w, y + h))
+            restored = _restore_trimmed_frame(crop, frame)
             out_path = state_dir / name
             if out_path.exists():
                 out_path = state_dir / f"{idx:04d}_{name}"
-            crop.save(out_path, format="PNG")
+            restored.save(out_path, format="PNG")
             out_files.append(str(out_path))
 
     return out_files
@@ -696,25 +936,47 @@ def playAni2d(
     max_w = 1
     max_h = 1
 
-    for frame in st_data.frames:
-        x = int(frame["x"])
-        y = int(frame["y"])
-        w = int(frame["w"])
-        h = int(frame["h"])
+    if st_data.storage == "raw":
+        raw_frames = st_data.raw_frames or []
+        for idx, raw_frame in enumerate(raw_frames):
+            frame_meta = st_data.frames[idx] if idx < len(st_data.frames) else {}
+            restored = _restore_trimmed_frame(raw_frame, frame_meta)
+            rgba_frames.append(restored)
+            rgb_frames.append(restored.convert("RGB"))
+            w, h = restored.size
 
-        cropped = st_data.atlas_image.crop((x, y, x + w, y + h))
-        rgba_frames.append(cropped)
-        rgb_frames.append(cropped.convert("RGB"))
+            if w > max_w:
+                max_w = w
+            if h > max_h:
+                max_h = h
 
-        if w > max_w:
-            max_w = w
-        if h > max_h:
-            max_h = h
+            if fps is not None:
+                frame_delays_ms.append(max(1, int(round(1000 / fps))))
+            else:
+                frame_delays_ms.append(int(frame_meta.get("durationMs", default_delay)))
+    else:
+        if st_data.atlas_image is None:
+            raise ValueError(f"状态 {st_data.name} 缺少 atlas 数据")
+        for frame in st_data.frames:
+            x = int(frame["x"])
+            y = int(frame["y"])
+            w = int(frame["w"])
+            h = int(frame["h"])
 
-        if fps is not None:
-            frame_delays_ms.append(max(1, int(round(1000 / fps))))
-        else:
-            frame_delays_ms.append(int(frame.get("durationMs", default_delay)))
+            cropped = st_data.atlas_image.crop((x, y, x + w, y + h))
+            restored = _restore_trimmed_frame(cropped, frame)
+            rgba_frames.append(restored)
+            rgb_frames.append(restored.convert("RGB"))
+
+            if restored.width > max_w:
+                max_w = restored.width
+            if restored.height > max_h:
+                max_h = restored.height
+
+            if fps is not None:
+                frame_delays_ms.append(max(1, int(round(1000 / fps))))
+            else:
+                frame_delays_ms.append(int(frame.get("durationMs", default_delay)))
 
     print(f"[playAni2d] render mode: {render_mode}")
     print(f"[playAni2d] state: {st_data.name}")
@@ -961,6 +1223,28 @@ def _build_parser() -> argparse.ArgumentParser:
             "仅支持 mp3/aac"
         ),
     )
+    p_encode.add_argument(
+        "--aniFile",
+        default=None,
+        help="可选: encode 输出 .a2d 文件路径；未传时默认 output/out.a2d",
+    )
+    p_encode.add_argument(
+        "--sizeMode",
+        choices=["auto", "atlas", "raw"],
+        default="auto",
+        help="状态图像存储模式: auto(按状态自动择优)/atlas/raw，默认 auto",
+    )
+    p_encode.add_argument(
+        "--atlasOptimize",
+        choices=["auto", "none", "pngquant"],
+        default="auto",
+        help="atlas PNG 优化方式: auto(有 pngquant 则尝试)/none/pngquant，默认 auto",
+    )
+    p_encode.add_argument(
+        "--noTrimTransparent",
+        action="store_true",
+        help="关闭透明边界裁剪；默认开启裁剪并在播放/导出时还原原尺寸",
+    )
     p_encode.add_argument("--fps", type=int, default=10, help="默认帧率，默认 10")
     p_encode.add_argument(
         "--padding",
@@ -1048,6 +1332,10 @@ def main(argv: List[str] | None = None) -> int:
             base_dir,
             state_names_raw=args.stateNames,
             bgms_raw=args.bgms,
+            ani_file=args.aniFile,
+            size_mode=args.sizeMode,
+            atlas_optimize=args.atlasOptimize,
+            trim_transparent=not args.noTrimTransparent,
             fps=args.fps,
             durations_ms=args.durationsMs,
             padding=args.padding,

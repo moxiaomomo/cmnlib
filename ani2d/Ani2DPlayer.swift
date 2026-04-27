@@ -18,10 +18,15 @@ public typealias A2DPlatformImage = NSImage
 public struct A2DFrameInfo: Decodable, Sendable {
     public let index: Int
     public let name: String?
-    public let x: Int
-    public let y: Int
+    public let x: Int?
+    public let y: Int?
     public let w: Int
     public let h: Int
+    public let byteSize: Int?
+    public let sourceW: Int?
+    public let sourceH: Int?
+    public let offsetX: Int?
+    public let offsetY: Int?
     public let durationMs: Int?
 }
 
@@ -37,7 +42,8 @@ public struct A2DStateInfo: Decodable, Sendable {
     public let name: String
     public let fps: Int
     public let frameCount: Int
-    public let atlas: A2DAtlasInfo
+    public let storage: String?
+    public let atlas: A2DAtlasInfo?
     public let bgm: A2DBgmInfo?
     public let frames: [A2DFrameInfo]
 }
@@ -57,7 +63,7 @@ public struct A2DFileMetadata: Decodable, Sendable {
     public let states: [A2DStateInfo]
 }
 
-// MARK: - Decoded State (frames lazily decoded from one state's atlas)
+// MARK: - Decoded State (frames lazily decoded from one state's visual data)
 
 public struct A2DDecodedState: Sendable {
     public let stateName: String
@@ -65,15 +71,16 @@ public struct A2DDecodedState: Sendable {
     public let frameDurations: [TimeInterval]
 }
 
-// MARK: - Asset (holds raw atlas PNG chunks; decodes per state on demand)
+// MARK: - Asset (holds raw visual chunks; decodes per state on demand)
 
-/// Holds the parsed .a2d file. Atlas PNG data for each state is stored raw;
-/// frames are decoded from the atlas only when that state is first requested.
+/// Holds the parsed .a2d file. State visual chunks are stored raw in memory;
+/// frames are decoded only when that state is first requested.
 /// Each state is decoded at most once per `load()` call.
 public final class A2DDecodedAsset: @unchecked Sendable {
     public let metadata: A2DFileMetadata
     public let orderedStateNames: [String]
     let atlasDataByState: [String: Data]
+    let rawFrameDataByState: [String: [Data]]
     let bgmDataByState: [String: Data]
     private var decodedStateCache: [String: A2DDecodedState] = [:]
 
@@ -81,31 +88,47 @@ public final class A2DDecodedAsset: @unchecked Sendable {
         metadata: A2DFileMetadata,
         orderedStateNames: [String],
         atlasDataByState: [String: Data],
+        rawFrameDataByState: [String: [Data]],
         bgmDataByState: [String: Data]
     ) {
         self.metadata = metadata
         self.orderedStateNames = orderedStateNames
         self.atlasDataByState = atlasDataByState
+        self.rawFrameDataByState = rawFrameDataByState
         self.bgmDataByState = bgmDataByState
     }
 
-    /// Returns decoded frames for `stateName`, decoding from the atlas PNG on first call.
+    /// Returns decoded frames for `stateName` on first call.
     /// Subsequent calls for the same state return the cached result.
     public func decodedState(for stateName: String) throws -> A2DDecodedState {
         if let cached = decodedStateCache[stateName] {
             return cached
         }
-        guard let atlasData = atlasDataByState[stateName] else {
-            throw A2DError.stateNotFound(stateName)
-        }
         guard let stateInfo = metadata.states.first(where: { $0.name == stateName }) else {
             throw A2DError.stateNotFound(stateName)
         }
-        let decoded = try A2DDecoder.decodeStateFrames(
-            atlasData: atlasData,
-            stateInfo: stateInfo,
-            fallbackFps: metadata.fps
-        )
+
+        let storage = (stateInfo.storage?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "atlas")
+        let decoded: A2DDecodedState
+        if storage == "raw" {
+            guard let rawFrameData = rawFrameDataByState[stateName] else {
+                throw A2DError.stateNotFound(stateName)
+            }
+            decoded = try A2DDecoder.decodeStateFramesFromRaw(
+                rawFrameData: rawFrameData,
+                stateInfo: stateInfo,
+                fallbackFps: metadata.fps
+            )
+        } else {
+            guard let atlasData = atlasDataByState[stateName] else {
+                throw A2DError.stateNotFound(stateName)
+            }
+            decoded = try A2DDecoder.decodeStateFramesFromAtlas(
+                atlasData: atlasData,
+                stateInfo: stateInfo,
+                fallbackFps: metadata.fps
+            )
+        }
         decodedStateCache[stateName] = decoded
         return decoded
     }
@@ -156,6 +179,8 @@ public enum A2DError: Error, LocalizedError {
     case invalidAtlasImage
     case invalidAtlasCGImage
     case frameCropFailed(index: Int)
+    case invalidRawFrameData(index: Int)
+    case frameGeometryInvalid(index: Int)
     case noFrames
     case stateNotFound(String)
 
@@ -181,6 +206,10 @@ public enum A2DError: Error, LocalizedError {
                 format: NSLocalizedString("a2d_error_frame_crop_failed", comment: "Failed to crop frame at index"),
                 index
             )
+        case .invalidRawFrameData(let index):
+            return "Invalid raw frame data at index \(index)"
+        case .frameGeometryInvalid(let index):
+            return "Invalid frame geometry at index \(index)"
         case .noFrames:
             return NSLocalizedString("a2d_error_no_frames", comment: "No playable frames in A2D")
         case .stateNotFound(let name):
@@ -240,22 +269,47 @@ public enum A2DDecoder {
         offset += alignPadLen(offset)
 
         var atlasDataByState: [String: Data] = [:]
+        var rawFrameDataByState: [String: [Data]] = [:]
         var bgmDataByState: [String: Data] = [:]
         var orderedStateNames: [String] = []
 
         for stateInfo in metadata.states {
-            let byteSize = stateInfo.atlas.byteSize
-            guard byteSize > 0 else {
-                throw A2DError.invalidPayloadLength
+            let storage = (stateInfo.storage?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "atlas")
+
+            if storage == "raw" {
+                var frameChunks: [Data] = []
+                frameChunks.reserveCapacity(stateInfo.frames.count)
+
+                for frame in stateInfo.frames {
+                    let frameByteSize = frame.byteSize ?? 0
+                    guard frameByteSize > 0 else {
+                        throw A2DError.invalidPayloadLength
+                    }
+                    let frameEnd = offset + frameByteSize
+                    guard frameEnd <= data.count else {
+                        throw A2DError.invalidPayloadLength
+                    }
+                    frameChunks.append(data.subdata(in: offset..<frameEnd))
+                    offset = frameEnd + alignPadLen(frameByteSize)
+                }
+                rawFrameDataByState[stateInfo.name] = frameChunks
+            } else {
+                guard let atlasInfo = stateInfo.atlas else {
+                    throw A2DError.invalidPayloadLength
+                }
+                let byteSize = atlasInfo.byteSize
+                guard byteSize > 0 else {
+                    throw A2DError.invalidPayloadLength
+                }
+                let chunkEnd = offset + byteSize
+                guard chunkEnd <= data.count else {
+                    throw A2DError.invalidPayloadLength
+                }
+                atlasDataByState[stateInfo.name] = data.subdata(in: offset..<chunkEnd)
+                // Advance by byteSize then pad to next 8-byte alignment
+                offset = chunkEnd + alignPadLen(byteSize)
             }
-            let chunkEnd = offset + byteSize
-            guard chunkEnd <= data.count else {
-                throw A2DError.invalidPayloadLength
-            }
-            atlasDataByState[stateInfo.name] = data.subdata(in: offset..<chunkEnd)
             orderedStateNames.append(stateInfo.name)
-            // Advance by byteSize then pad to next 8-byte alignment
-            offset = chunkEnd + alignPadLen(byteSize)
 
             if let bgmInfo = stateInfo.bgm, bgmInfo.byteSize > 0 {
                 let bgmEnd = offset + bgmInfo.byteSize
@@ -271,6 +325,7 @@ public enum A2DDecoder {
             metadata: metadata,
             orderedStateNames: orderedStateNames,
             atlasDataByState: atlasDataByState,
+            rawFrameDataByState: rawFrameDataByState,
             bgmDataByState: bgmDataByState
         )
     }
@@ -312,7 +367,7 @@ public enum A2DDecoder {
 
     /// Decodes all frames for a single state from its atlas PNG bytes.
     /// Called lazily by `A2DDecodedAsset.decodedState(for:)`.
-    static func decodeStateFrames(
+    static func decodeStateFramesFromAtlas(
         atlasData: Data,
         stateInfo: A2DStateInfo,
         fallbackFps: Int
@@ -332,20 +387,52 @@ public enum A2DDecoder {
         frames.reserveCapacity(stateInfo.frames.count)
 
         for frameInfo in stateInfo.frames {
-            let rect = CGRect(x: frameInfo.x, y: frameInfo.y, width: frameInfo.w, height: frameInfo.h)
+            guard
+                let x = frameInfo.x,
+                let y = frameInfo.y,
+                frameInfo.w > 0,
+                frameInfo.h > 0
+            else {
+                throw A2DError.frameGeometryInvalid(index: frameInfo.index)
+            }
+            let rect = CGRect(x: x, y: y, width: frameInfo.w, height: frameInfo.h)
             guard let cropped = atlasCGImage.cropping(to: rect) else {
                 throw A2DError.frameCropFailed(index: frameInfo.index)
             }
-            frames.append(makePlatformImage(from: cropped))
+            frames.append(try makePlatformImageWithRestoredCanvas(from: cropped, frameInfo: frameInfo))
         }
 
-        let effectiveFps = stateInfo.fps > 0 ? stateInfo.fps : max(1, fallbackFps)
-        let defaultDuration = max(0.001, 1.0 / Double(effectiveFps))
-        let durations: [TimeInterval] = stateInfo.frames.map { frame in
-            if let ms = frame.durationMs, ms > 0 { return Double(ms) / 1000.0 }
-            return defaultDuration
+        let durations = buildFrameDurations(stateInfo: stateInfo, fallbackFps: fallbackFps)
+        return A2DDecodedState(stateName: stateInfo.name, frames: frames, frameDurations: durations)
+    }
+
+    static func decodeStateFramesFromRaw(
+        rawFrameData: [Data],
+        stateInfo: A2DStateInfo,
+        fallbackFps: Int
+    ) throws -> A2DDecodedState {
+        guard !stateInfo.frames.isEmpty else {
+            throw A2DError.noFrames
+        }
+        guard rawFrameData.count == stateInfo.frames.count else {
+            throw A2DError.invalidPayloadLength
         }
 
+        var frames: [A2DPlatformImage] = []
+        frames.reserveCapacity(rawFrameData.count)
+
+        for (idx, frameBytes) in rawFrameData.enumerated() {
+            guard
+                let source = CGImageSourceCreateWithData(frameBytes as CFData, nil),
+                let frameCGImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+            else {
+                throw A2DError.invalidRawFrameData(index: idx)
+            }
+            let frameInfo = stateInfo.frames[idx]
+            frames.append(try makePlatformImageWithRestoredCanvas(from: frameCGImage, frameInfo: frameInfo))
+        }
+
+        let durations = buildFrameDurations(stateInfo: stateInfo, fallbackFps: fallbackFps)
         return A2DDecodedState(stateName: stateInfo.name, frames: frames, frameDurations: durations)
     }
 
@@ -363,6 +450,59 @@ public enum A2DDecoder {
         #elseif canImport(AppKit)
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
         #endif
+    }
+
+    private static func makePlatformImageWithRestoredCanvas(
+        from cgImage: CGImage,
+        frameInfo: A2DFrameInfo
+    ) throws -> A2DPlatformImage {
+        let sourceW = max(1, frameInfo.sourceW ?? frameInfo.w)
+        let sourceH = max(1, frameInfo.sourceH ?? frameInfo.h)
+        let offsetX = frameInfo.offsetX ?? 0
+        let offsetY = frameInfo.offsetY ?? 0
+
+        if sourceW == cgImage.width, sourceH == cgImage.height, offsetX == 0, offsetY == 0 {
+            return makePlatformImage(from: cgImage)
+        }
+
+        guard
+            let colorSpace = cgImage.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB),
+            let context = CGContext(
+                data: nil,
+                width: sourceW,
+                height: sourceH,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        else {
+            throw A2DError.invalidAtlasCGImage
+        }
+
+        context.clear(CGRect(x: 0, y: 0, width: sourceW, height: sourceH))
+        // `offsetY` comes from Python/Pillow top-left coordinates.
+        // CoreGraphics draws in bottom-left coordinates, so convert only the Y origin
+        // and avoid applying a global vertical flip that can invert the final frame.
+        let drawY = sourceH - offsetY - cgImage.height
+        context.draw(
+            cgImage,
+            in: CGRect(x: offsetX, y: drawY, width: cgImage.width, height: cgImage.height)
+        )
+
+        guard let restored = context.makeImage() else {
+            throw A2DError.invalidAtlasCGImage
+        }
+        return makePlatformImage(from: restored)
+    }
+
+    private static func buildFrameDurations(stateInfo: A2DStateInfo, fallbackFps: Int) -> [TimeInterval] {
+        let effectiveFps = stateInfo.fps > 0 ? stateInfo.fps : max(1, fallbackFps)
+        let defaultDuration = max(0.001, 1.0 / Double(effectiveFps))
+        return stateInfo.frames.map { frame in
+            if let ms = frame.durationMs, ms > 0 { return Double(ms) / 1000.0 }
+            return defaultDuration
+        }
     }
 
     private static func readUInt16LE(from data: Data, offset: Int) throws -> UInt16 {

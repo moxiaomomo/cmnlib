@@ -18,6 +18,9 @@ local.properties
 
 ani2d/output/
 ani2d/tmp/
+swift/pigJpg/
+swift/pigJpg_rmbg/
+swift/removebg
 
 # External tool builders
 .externalToolBuilders/

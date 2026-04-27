@@ -49,7 +49,14 @@ struct TestPlayA2D {
             print("[test_play_a2d] stateCount=\(decoded.metadata.stateCount), totalFrameCount=\(decoded.metadata.totalFrameCount ?? 0)")
             print("[test_play_a2d] orderedStateNames=\(decoded.orderedStateNames)")
             if let firstStateInfo = decoded.metadata.states.first {
-                print("[test_play_a2d] firstState=\(firstStateInfo.name), frameCount=\(firstStateInfo.frameCount), atlas=\(firstStateInfo.atlas.width)x\(firstStateInfo.atlas.height)")
+                let storage = firstStateInfo.storage ?? "atlas"
+                let atlasDesc: String
+                if let atlas = firstStateInfo.atlas {
+                    atlasDesc = "\(atlas.width)x\(atlas.height)"
+                } else {
+                    atlasDesc = "none"
+                }
+                print("[test_play_a2d] firstState=\(firstStateInfo.name), frameCount=\(firstStateInfo.frameCount), storage=\(storage), atlas=\(atlasDesc)")
             }
             // Verify lazy decode for each state
             for stateName in decoded.orderedStateNames {
