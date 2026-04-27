@@ -372,12 +372,7 @@ public enum A2DDecoder {
         stateInfo: A2DStateInfo,
         fallbackFps: Int
     ) throws -> A2DDecodedState {
-        guard
-            let source = CGImageSourceCreateWithData(atlasData as CFData, nil),
-            let atlasCGImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
-        else {
-            throw A2DError.invalidAtlasImage
-        }
+        let atlasCGImage = try makeAtlasCGImage(atlasData: atlasData)
 
         guard !stateInfo.frames.isEmpty else {
             throw A2DError.noFrames
@@ -387,19 +382,7 @@ public enum A2DDecoder {
         frames.reserveCapacity(stateInfo.frames.count)
 
         for frameInfo in stateInfo.frames {
-            guard
-                let x = frameInfo.x,
-                let y = frameInfo.y,
-                frameInfo.w > 0,
-                frameInfo.h > 0
-            else {
-                throw A2DError.frameGeometryInvalid(index: frameInfo.index)
-            }
-            let rect = CGRect(x: x, y: y, width: frameInfo.w, height: frameInfo.h)
-            guard let cropped = atlasCGImage.cropping(to: rect) else {
-                throw A2DError.frameCropFailed(index: frameInfo.index)
-            }
-            frames.append(try makePlatformImageWithRestoredCanvas(from: cropped, frameInfo: frameInfo))
+            frames.append(try decodeSingleFrameFromAtlas(atlasCGImage: atlasCGImage, frameInfo: frameInfo))
         }
 
         let durations = buildFrameDurations(stateInfo: stateInfo, fallbackFps: fallbackFps)
@@ -422,14 +405,14 @@ public enum A2DDecoder {
         frames.reserveCapacity(rawFrameData.count)
 
         for (idx, frameBytes) in rawFrameData.enumerated() {
-            guard
-                let source = CGImageSourceCreateWithData(frameBytes as CFData, nil),
-                let frameCGImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
-            else {
-                throw A2DError.invalidRawFrameData(index: idx)
-            }
             let frameInfo = stateInfo.frames[idx]
-            frames.append(try makePlatformImageWithRestoredCanvas(from: frameCGImage, frameInfo: frameInfo))
+            frames.append(
+                try decodeSingleFrameFromRaw(
+                    frameData: frameBytes,
+                    frameInfo: frameInfo,
+                    index: idx
+                )
+            )
         }
 
         let durations = buildFrameDurations(stateInfo: stateInfo, fallbackFps: fallbackFps)
@@ -450,6 +433,49 @@ public enum A2DDecoder {
         #elseif canImport(AppKit)
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
         #endif
+    }
+
+    static func makeAtlasCGImage(atlasData: Data) throws -> CGImage {
+        guard
+            let source = CGImageSourceCreateWithData(atlasData as CFData, nil),
+            let atlasCGImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else {
+            throw A2DError.invalidAtlasImage
+        }
+        return atlasCGImage
+    }
+
+    static func decodeSingleFrameFromAtlas(
+        atlasCGImage: CGImage,
+        frameInfo: A2DFrameInfo
+    ) throws -> A2DPlatformImage {
+        guard
+            let x = frameInfo.x,
+            let y = frameInfo.y,
+            frameInfo.w > 0,
+            frameInfo.h > 0
+        else {
+            throw A2DError.frameGeometryInvalid(index: frameInfo.index)
+        }
+        let rect = CGRect(x: x, y: y, width: frameInfo.w, height: frameInfo.h)
+        guard let cropped = atlasCGImage.cropping(to: rect) else {
+            throw A2DError.frameCropFailed(index: frameInfo.index)
+        }
+        return try makePlatformImageWithRestoredCanvas(from: cropped, frameInfo: frameInfo)
+    }
+
+    static func decodeSingleFrameFromRaw(
+        frameData: Data,
+        frameInfo: A2DFrameInfo,
+        index: Int
+    ) throws -> A2DPlatformImage {
+        guard
+            let source = CGImageSourceCreateWithData(frameData as CFData, nil),
+            let frameCGImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else {
+            throw A2DError.invalidRawFrameData(index: index)
+        }
+        return try makePlatformImageWithRestoredCanvas(from: frameCGImage, frameInfo: frameInfo)
     }
 
     private static func makePlatformImageWithRestoredCanvas(
@@ -496,7 +522,7 @@ public enum A2DDecoder {
         return makePlatformImage(from: restored)
     }
 
-    private static func buildFrameDurations(stateInfo: A2DStateInfo, fallbackFps: Int) -> [TimeInterval] {
+    static func buildFrameDurations(stateInfo: A2DStateInfo, fallbackFps: Int) -> [TimeInterval] {
         let effectiveFps = stateInfo.fps > 0 ? stateInfo.fps : max(1, fallbackFps)
         let defaultDuration = max(0.001, 1.0 / Double(effectiveFps))
         return stateInfo.frames.map { frame in
@@ -527,6 +553,8 @@ public final class A2DPlayerView: UIView {
     public private(set) var currentStateName: String?
     public var loops = true
     public var automaticallySizesToContent = true
+    public var preloadSeconds: Double = 2.0
+    public var backgroundBatchSeconds: Double = 1.0
     public var singleTapDebounceInterval: TimeInterval = 0.2
     public var onInteraction: ((A2DInteractionEvent) -> Void)?
     public var availableStateNames: [String] {
@@ -535,6 +563,16 @@ public final class A2DPlayerView: UIView {
 
     private let imageView = UIImageView()
     private var currentDecodedState: A2DDecodedState?
+    private var progressiveFrameDurations: [TimeInterval] = []
+    private var progressiveAllDurations: [TimeInterval] = []
+    private var progressiveStateInfo: A2DStateInfo?
+    private var progressiveAtlasCGImage: CGImage?
+    private var progressiveRawFrameData: [Data] = []
+    private var progressiveNextDecodeIndex: Int = 0
+    private var progressiveIsLoading: Bool = false
+    private var progressiveLoadToken = UUID()
+    private var lastPreparedRequest: (token: Int, stateName: String)?
+    private let progressiveDecodeQueue = DispatchQueue(label: "ani2d.decode.queue", qos: .userInitiated)
     private var bgmPlayer: AVAudioPlayer?
     private var currentFrameIndex = 0
     private var scheduledWork: DispatchWorkItem?
@@ -624,8 +662,8 @@ public final class A2DPlayerView: UIView {
     }
 
     @discardableResult
-    public func play(stateName: String?, loop: Bool? = nil) -> Bool {
-        _ = selectState(stateName, restart: true)
+    public func play(stateName: String?, loop: Bool? = nil, requestToken: Int? = nil) -> Bool {
+        _ = selectState(stateName, restart: true, requestToken: requestToken)
         play(loop: loop)
         return true
     }
@@ -673,7 +711,7 @@ public final class A2DPlayerView: UIView {
     }
 
     @discardableResult
-    public func selectState(_ stateName: String?, restart: Bool = true) -> Bool {
+    public func selectState(_ stateName: String?, restart: Bool = true, requestToken: Int? = nil) -> Bool {
         guard let asset else {
             return false
         }
@@ -690,10 +728,34 @@ public final class A2DPlayerView: UIView {
             return false
         }
 
+        if
+            let requestToken,
+            let lastPreparedRequest,
+            lastPreparedRequest.token == requestToken,
+            lastPreparedRequest.stateName == selectedName || selectedName=="default",
+            currentDecodedState?.stateName == selectedName || selectedName=="default"
+        {
+            if restart {
+                currentFrameIndex = 0
+                render(frameAt: currentFrameIndex)
+            }
+            return true
+        } else if (requestToken==nil) {
+            if restart {
+                currentFrameIndex = 0
+                render(frameAt: currentFrameIndex)
+            }
+            return true
+        }
+
         do {
-            currentDecodedState = try asset.decodedState(for: selectedName)
+            try prepareProgressiveDecoding(asset: asset, stateName: selectedName)
         } catch {
             return false
+        }
+
+        if let requestToken {
+            lastPreparedRequest = (token: requestToken, stateName: selectedName)
         }
 
         let frameCount = currentDecodedState?.frames.count ?? 0
@@ -703,11 +765,268 @@ public final class A2DPlayerView: UIView {
         if restart || currentFrameIndex >= playbackFrameIndices.count {
             currentFrameIndex = 0
         }
+        if playbackFrameIndices.isEmpty {
+            currentFrameIndex = 0
+        }
         if isPlaying {
             playBgmForCurrentState(looping: loops)
         }
         render(frameAt: currentFrameIndex)
+
+        startBackgroundDecodingIfNeeded()
         return true
+    }
+
+    private func resetProgressiveState() {
+        progressiveLoadToken = UUID()
+        lastPreparedRequest = nil
+        progressiveFrameDurations = []
+        progressiveAllDurations = []
+        progressiveStateInfo = nil
+        progressiveAtlasCGImage = nil
+        progressiveRawFrameData = []
+        progressiveNextDecodeIndex = 0
+        progressiveIsLoading = false
+    }
+
+    private func prepareProgressiveDecoding(asset: A2DDecodedAsset, stateName: String) throws {
+        resetProgressiveState()
+
+        guard let stateInfo = asset.metadata.states.first(where: { $0.name == stateName }) else {
+            throw A2DError.stateNotFound(stateName)
+        }
+        progressiveStateInfo = stateInfo
+        progressiveAllDurations = A2DDecoder.buildFrameDurations(stateInfo: stateInfo, fallbackFps: asset.metadata.fps)
+
+        let totalFrames = stateInfo.frames.count
+        guard totalFrames > 0 else {
+            currentDecodedState = A2DDecodedState(stateName: stateName, frames: [], frameDurations: [])
+            return
+        }
+
+        let storage = (stateInfo.storage?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "atlas")
+        if storage == "raw" {
+            guard let rawData = asset.rawFrameDataByState[stateName], rawData.count == totalFrames else {
+                throw A2DError.invalidPayloadLength
+            }
+            progressiveRawFrameData = rawData
+        } else {
+            guard let atlasData = asset.atlasDataByState[stateName] else {
+                throw A2DError.stateNotFound(stateName)
+            }
+            progressiveAtlasCGImage = try A2DDecoder.makeAtlasCGImage(atlasData: atlasData)
+        }
+
+        let preloadCount = max(1, frameCountForSeconds(progressiveAllDurations, seconds: preloadSeconds))
+        let initialEnd = min(totalFrames, preloadCount)
+        let initialFrames = try decodeFramesRange(start: 0, endExclusive: initialEnd)
+        progressiveFrameDurations = Array(progressiveAllDurations.prefix(initialEnd))
+        progressiveNextDecodeIndex = initialEnd
+
+        currentDecodedState = A2DDecodedState(
+            stateName: stateName,
+            frames: initialFrames,
+            frameDurations: progressiveFrameDurations
+        )
+    }
+
+    private func frameCountForSeconds(_ durations: [TimeInterval], seconds: Double) -> Int {
+        let target = max(0.001, seconds)
+        var sum: TimeInterval = 0
+        var count = 0
+        for d in durations {
+            sum += d
+            count += 1
+            if sum >= target {
+                break
+            }
+        }
+        return max(1, count)
+    }
+
+    private func decodeFramesRange(start: Int, endExclusive: Int) throws -> [A2DPlatformImage] {
+        guard let stateInfo = progressiveStateInfo else { return [] }
+        guard start < endExclusive else { return [] }
+
+        var out: [A2DPlatformImage] = []
+        out.reserveCapacity(endExclusive - start)
+
+        let storage = (stateInfo.storage?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "atlas")
+        if storage == "raw" {
+            for idx in start..<endExclusive {
+                out.append(
+                    try A2DDecoder.decodeSingleFrameFromRaw(
+                        frameData: progressiveRawFrameData[idx],
+                        frameInfo: stateInfo.frames[idx],
+                        index: idx
+                    )
+                )
+            }
+        } else {
+            guard let atlasCGImage = progressiveAtlasCGImage else {
+                throw A2DError.invalidAtlasImage
+            }
+            for idx in start..<endExclusive {
+                out.append(
+                    try A2DDecoder.decodeSingleFrameFromAtlas(
+                        atlasCGImage: atlasCGImage,
+                        frameInfo: stateInfo.frames[idx]
+                    )
+                )
+            }
+        }
+        return out
+    }
+
+    private func startBackgroundDecodingIfNeeded() {
+        guard let stateInfo = progressiveStateInfo else { return }
+        guard progressiveNextDecodeIndex < stateInfo.frames.count else {
+            progressiveIsLoading = false
+            return
+        }
+        guard !progressiveIsLoading else { return }
+
+        progressiveIsLoading = true
+        let token = progressiveLoadToken
+
+        progressiveDecodeQueue.async { [weak self] in
+            Task { [weak self] in
+                await self?.decodeNextBatch(token: token)
+            }
+        }
+    }
+
+    private nonisolated func decodeNextBatch(token: UUID) async {
+        typealias DecodePlan = (
+            stateInfo: A2DStateInfo,
+            start: Int,
+            end: Int,
+            storage: String,
+            durations: [TimeInterval],
+            rawFrameData: [Data],
+            atlasCGImage: CGImage?
+        )
+
+        let plan: DecodePlan? = await MainActor.run { [weak self] in
+            guard let self else { return nil }
+            guard let stateInfo = self.progressiveStateInfo else {
+                self.progressiveIsLoading = false
+                return nil
+            }
+
+            let start = self.progressiveNextDecodeIndex
+            if start >= stateInfo.frames.count {
+                self.progressiveIsLoading = false
+                return nil
+            }
+
+            guard start < self.progressiveAllDurations.count else {
+                self.progressiveIsLoading = false
+                return nil
+            }
+
+            let remainingDurations = Array(self.progressiveAllDurations[start...])
+            guard !remainingDurations.isEmpty else {
+                self.progressiveIsLoading = false
+                return nil
+            }
+
+            let batchFrames = self.frameCountForSeconds(remainingDurations, seconds: self.backgroundBatchSeconds)
+            let endByDurations = start + max(1, batchFrames)
+            let end = min(stateInfo.frames.count, min(self.progressiveAllDurations.count, endByDurations))
+            guard end > start else {
+                self.progressiveIsLoading = false
+                return nil
+            }
+
+            let storage = (stateInfo.storage?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "atlas")
+            return (
+                stateInfo: stateInfo,
+                start: start,
+                end: end,
+                storage: storage,
+                durations: self.progressiveAllDurations,
+                rawFrameData: self.progressiveRawFrameData,
+                atlasCGImage: self.progressiveAtlasCGImage
+            )
+        }
+
+        guard let plan else {
+            return
+        }
+
+        let frames: [A2DPlatformImage]
+        do {
+            var decodedFrames: [A2DPlatformImage] = []
+            decodedFrames.reserveCapacity(plan.end - plan.start)
+
+            if plan.storage == "raw" {
+                for idx in plan.start..<plan.end {
+                    decodedFrames.append(
+                        try A2DDecoder.decodeSingleFrameFromRaw(
+                            frameData: plan.rawFrameData[idx],
+                            frameInfo: plan.stateInfo.frames[idx],
+                            index: idx
+                        )
+                    )
+                }
+            } else {
+                guard let atlasCGImage = plan.atlasCGImage else {
+                    await MainActor.run { [weak self] in
+                        self?.progressiveIsLoading = false
+                    }
+                    return
+                }
+                for idx in plan.start..<plan.end {
+                    decodedFrames.append(
+                        try A2DDecoder.decodeSingleFrameFromAtlas(
+                            atlasCGImage: atlasCGImage,
+                            frameInfo: plan.stateInfo.frames[idx]
+                        )
+                    )
+                }
+            }
+            frames = decodedFrames
+        } catch {
+            await MainActor.run { [weak self] in
+                self?.progressiveIsLoading = false
+            }
+            return
+        }
+
+        let durationsAppend = Array(plan.durations[plan.start..<plan.end])
+
+        await MainActor.run { [weak self] in
+            guard let self else { return }
+            guard self.progressiveLoadToken == token else { return }
+            guard var decoded = self.currentDecodedState else {
+                self.progressiveIsLoading = false
+                return
+            }
+
+            var newFrames = decoded.frames
+            newFrames.append(contentsOf: frames)
+            self.progressiveFrameDurations.append(contentsOf: durationsAppend)
+
+            decoded = A2DDecodedState(
+                stateName: decoded.stateName,
+                frames: newFrames,
+                frameDurations: self.progressiveFrameDurations
+            )
+            self.currentDecodedState = decoded
+            self.playbackFrameIndices = Array(0..<newFrames.count)
+            self.progressiveNextDecodeIndex = plan.end
+
+            if self.progressiveNextDecodeIndex < plan.stateInfo.frames.count {
+                self.progressiveDecodeQueue.async { [weak self] in
+                    Task { [weak self] in
+                        await self?.decodeNextBatch(token: token)
+                    }
+                }
+            } else {
+                self.progressiveIsLoading = false
+            }
+        }
     }
 
     private func playBgmForCurrentState(looping: Bool) {
@@ -761,6 +1080,7 @@ public final class A2DPlayerView: UIView {
 
     private func apply(asset: A2DDecodedAsset) {
         pause()
+        resetProgressiveState()
         self.asset = asset
         currentDecodedState = nil
         lastSingleTapEventTime = nil
@@ -794,7 +1114,18 @@ public final class A2DPlayerView: UIView {
             return
         }
         guard !playbackFrameIndices.isEmpty else {
-            pause()
+            if progressiveIsLoading {
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    if self.isPlaying {
+                        self.scheduleNextFrame()
+                    }
+                }
+                scheduledWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: work)
+            } else {
+                pause()
+            }
             return
         }
 
@@ -803,7 +1134,7 @@ public final class A2DPlayerView: UIView {
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.isPlaying,
                   let _ = self.asset,
-                  let decodedState = self.currentDecodedState else {
+                  let _ = self.currentDecodedState else {
                 return
             }
             guard !self.playbackFrameIndices.isEmpty else {
@@ -813,6 +1144,20 @@ public final class A2DPlayerView: UIView {
 
             let nextIndex = self.currentFrameIndex + 1
             if nextIndex >= self.playbackFrameIndices.count {
+                if self.progressiveIsLoading {
+                    // 已经到当前已解码末尾，等待下一批到达
+                    self.currentFrameIndex = self.playbackFrameIndices.count - 1
+                    let waitWork = DispatchWorkItem { [weak self] in
+                        guard let self else { return }
+                        if self.isPlaying {
+                            self.scheduleNextFrame()
+                        }
+                    }
+                    self.scheduledWork = waitWork
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: waitWork)
+                    return
+                }
+
                 if self.loops {
                     self.currentFrameIndex = 0
                 } else {
