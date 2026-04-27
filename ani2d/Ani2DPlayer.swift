@@ -4,6 +4,7 @@ import ImageIO
 
 #if canImport(UIKit)
 import UIKit
+import AVFoundation
 public typealias A2DPlatformImage = UIImage
 #elseif canImport(AppKit)
 import AppKit
@@ -37,7 +38,14 @@ public struct A2DStateInfo: Decodable, Sendable {
     public let fps: Int
     public let frameCount: Int
     public let atlas: A2DAtlasInfo
+    public let bgm: A2DBgmInfo?
     public let frames: [A2DFrameInfo]
+}
+
+public struct A2DBgmInfo: Decodable, Sendable {
+    public let codec: String
+    public let byteSize: Int
+    public let fileName: String?
 }
 
 public struct A2DFileMetadata: Decodable, Sendable {
@@ -66,16 +74,19 @@ public final class A2DDecodedAsset: @unchecked Sendable {
     public let metadata: A2DFileMetadata
     public let orderedStateNames: [String]
     let atlasDataByState: [String: Data]
+    let bgmDataByState: [String: Data]
     private var decodedStateCache: [String: A2DDecodedState] = [:]
 
     init(
         metadata: A2DFileMetadata,
         orderedStateNames: [String],
-        atlasDataByState: [String: Data]
+        atlasDataByState: [String: Data],
+        bgmDataByState: [String: Data]
     ) {
         self.metadata = metadata
         self.orderedStateNames = orderedStateNames
         self.atlasDataByState = atlasDataByState
+        self.bgmDataByState = bgmDataByState
     }
 
     /// Returns decoded frames for `stateName`, decoding from the atlas PNG on first call.
@@ -97,6 +108,14 @@ public final class A2DDecodedAsset: @unchecked Sendable {
         )
         decodedStateCache[stateName] = decoded
         return decoded
+    }
+
+    public func hasBgm(for stateName: String) -> Bool {
+        return bgmDataByState[stateName] != nil
+    }
+
+    public func bgmData(for stateName: String) -> Data? {
+        return bgmDataByState[stateName]
     }
 }
 
@@ -221,6 +240,7 @@ public enum A2DDecoder {
         offset += alignPadLen(offset)
 
         var atlasDataByState: [String: Data] = [:]
+        var bgmDataByState: [String: Data] = [:]
         var orderedStateNames: [String] = []
 
         for stateInfo in metadata.states {
@@ -236,12 +256,22 @@ public enum A2DDecoder {
             orderedStateNames.append(stateInfo.name)
             // Advance by byteSize then pad to next 8-byte alignment
             offset = chunkEnd + alignPadLen(byteSize)
+
+            if let bgmInfo = stateInfo.bgm, bgmInfo.byteSize > 0 {
+                let bgmEnd = offset + bgmInfo.byteSize
+                guard bgmEnd <= data.count else {
+                    throw A2DError.invalidPayloadLength
+                }
+                bgmDataByState[stateInfo.name] = data.subdata(in: offset..<bgmEnd)
+                offset = bgmEnd + alignPadLen(bgmInfo.byteSize)
+            }
         }
 
         return A2DDecodedAsset(
             metadata: metadata,
             orderedStateNames: orderedStateNames,
-            atlasDataByState: atlasDataByState
+            atlasDataByState: atlasDataByState,
+            bgmDataByState: bgmDataByState
         )
     }
 
@@ -365,6 +395,7 @@ public final class A2DPlayerView: UIView {
 
     private let imageView = UIImageView()
     private var currentDecodedState: A2DDecodedState?
+    private var bgmPlayer: AVAudioPlayer?
     private var currentFrameIndex = 0
     private var scheduledWork: DispatchWorkItem?
     private var playbackFrameIndices: [Int] = []
@@ -402,6 +433,7 @@ public final class A2DPlayerView: UIView {
 
     deinit {
         scheduledWork?.cancel()
+        bgmPlayer?.stop()
     }
 
     public func load(from fileURL: URL) throws {
@@ -445,6 +477,7 @@ public final class A2DPlayerView: UIView {
         }
 
         isPlaying = true
+        playBgmForCurrentState(looping: loops)
         scheduledWork?.cancel()
         render(frameAt: currentFrameIndex)
         scheduleNextFrame()
@@ -461,10 +494,13 @@ public final class A2DPlayerView: UIView {
         isPlaying = false
         scheduledWork?.cancel()
         scheduledWork = nil
+        bgmPlayer?.pause()
     }
 
     public func stop() {
         pause()
+        bgmPlayer?.stop()
+        bgmPlayer?.currentTime = 0
         currentFrameIndex = 0
         render(frameAt: currentFrameIndex)
     }
@@ -527,8 +563,33 @@ public final class A2DPlayerView: UIView {
         if restart || currentFrameIndex >= playbackFrameIndices.count {
             currentFrameIndex = 0
         }
+        if isPlaying {
+            playBgmForCurrentState(looping: loops)
+        }
         render(frameAt: currentFrameIndex)
         return true
+    }
+
+    private func playBgmForCurrentState(looping: Bool) {
+        guard
+            let asset,
+            let stateName = currentStateName,
+            let bgmData = asset.bgmData(for: stateName)
+        else {
+            bgmPlayer?.stop()
+            bgmPlayer = nil
+            return
+        }
+
+        do {
+            let player = try AVAudioPlayer(data: bgmData)
+            player.numberOfLoops = looping ? -1 : 0
+            player.prepareToPlay()
+            player.play()
+            bgmPlayer = player
+        } catch {
+            bgmPlayer = nil
+        }
     }
 
     private func commonInit() {

@@ -54,7 +54,8 @@ struct TestPlayA2D {
             // Verify lazy decode for each state
             for stateName in decoded.orderedStateNames {
                 let decodedState = try decoded.decodedState(for: stateName)
-                print("[test_play_a2d] state '\(stateName)': frames=\(decodedState.frames.count), firstDuration=\(decodedState.frameDurations.first ?? 0)")
+                let hasBgm = decoded.hasBgm(for: stateName)
+                print("[test_play_a2d] state '\(stateName)': frames=\(decodedState.frames.count), firstDuration=\(decodedState.frameDurations.first ?? 0), hasBgm=\(hasBgm)")
             }
         } catch {
             print("[test_play_a2d] decode failed: \(error.localizedDescription)")

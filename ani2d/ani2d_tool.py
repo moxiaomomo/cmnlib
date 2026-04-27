@@ -10,9 +10,13 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import io
 import json
+import re
+import shutil
 import struct
+import subprocess
 import sys
 import uuid
 from dataclasses import dataclass
@@ -50,6 +54,9 @@ class Ani2dStateData:
     name: str
     atlas_image: Image.Image
     frames: List[Dict[str, Any]]
+    bgm_data: Optional[bytes] = None
+    bgm_codec: Optional[str] = None
+    bgm_file_name: Optional[str] = None
 
 
 @dataclass
@@ -215,38 +222,23 @@ def _parse_state_names(state_names_raw: Optional[str]) -> List[str]:
     return state_names
 
 
-def _split_csv_values(value: str) -> List[str]:
-    return [v.strip() for v in value.split(",") if v.strip()]
-
-
 def _expand_pattern_sequence(pattern: str) -> List[str]:
     """
     扩展 %Nd 格式的文件序列模式。
     例如: "folder/img_%03d.png" -> ["folder/img_000.png", "folder/img_001.png", ...]
     查找从 0 开始连续的文件，直到某个编号的文件不存在。
     """
-    import re
-    
     match = re.search(r'%(\d*)d', pattern)
     if not match:
         # 不是 %d 格式，直接作为单个文件返回
         return [pattern]
     
-    # 提取宽度（若为空则默认为 1）
     width_str = match.group(1)
-    width = int(width_str) if width_str else 1
-    
-    # 构造 glob 模式来查找所有匹配的文件
     glob_pattern = re.sub(r'%\d*d', '*', pattern)
-    from pathlib import Path
-    import glob as glob_module
-    
-    # 使用 glob 查找所有匹配文件
-    matched_files = glob_module.glob(glob_pattern)
-    
+    matched_files = sorted(glob.glob(glob_pattern))
+
     if not matched_files:
-        # 没有找到任何文件，尝试用顺序号直接查找
-        # 这样可以支持不是通过 glob 能找到的情况
+        # 若 glob 没找到，按 0,1,2... 连续探测
         result: List[str] = []
         idx = 0
         while True:
@@ -257,45 +249,66 @@ def _expand_pattern_sequence(pattern: str) -> List[str]:
             idx += 1
         if result:
             return result
-        else:
-            raise ValueError(f"未找到匹配 {pattern} 的文件序列")
-    
-    # 将匹配的文件按照格式化后的编号排序
-    # 提取每个文件对应的数字
+        raise ValueError(f"未找到匹配 {pattern} 的文件序列")
+
     def extract_number(filepath: str) -> tuple[int | None, str]:
         basename = Path(filepath).name
-        # 试图从文件名中提取对应的数字
         pattern_name = Path(pattern).name
-        # 构造正则表达式：将 %Nd 替换成数字捕获组
         test_pattern = pattern_name.replace('%' + width_str + 'd', '(\\d+)')
         test_match = re.search(test_pattern, basename)
         if test_match:
             return (int(test_match.group(1)), filepath)
         return (None, filepath)
-    
-    # 排序：优先按编号，如果无法提取则按字母顺序
+
     numbered = [extract_number(f) for f in matched_files]
     numbered_sort = sorted(numbered, key=lambda x: (x[0] is None, x[0], x[1]))
     return [path for _, path in numbered_sort]
 
 
 def _split_csv_values(value: str) -> List[str]:
-    """
-    分割逗号分隔的值，支持 %Nd 格式的序列扩展。
-    """
     parts = [v.strip() for v in value.split(",") if v.strip()]
     result: List[str] = []
     for part in parts:
         if '%' in part and 'd' in part:
-            # 尝试作为 %Nd 格式展开
             try:
                 result.extend(_expand_pattern_sequence(part))
             except ValueError:
-                # 如果展开失败，作为字面文件处理
                 result.append(part)
         else:
             result.append(part)
     return result
+
+
+def _parse_bgms(bgms_raw: Optional[str], state_names: List[str]) -> Dict[str, Path]:
+    if bgms_raw is None:
+        return {}
+
+    mapping: Dict[str, Path] = {}
+    known = set(state_names)
+    entries = [v.strip() for v in bgms_raw.split(";") if v.strip()]
+
+    for item in entries:
+        if ":" not in item:
+            raise ValueError(f"--bgms 配置格式错误: {item}，应为 state:path")
+        state_name, raw_path = item.split(":", 1)
+        state_name = state_name.strip()
+        raw_path = raw_path.strip()
+
+        if not state_name or not raw_path:
+            raise ValueError(f"--bgms 配置格式错误: {item}，应为 state:path")
+        if state_name not in known:
+            raise ValueError(f"--bgms 中存在未知状态: {state_name}")
+
+        p = Path(raw_path).expanduser().resolve()
+        if not p.exists():
+            raise FileNotFoundError(f"bgm 文件不存在: {p}")
+        ext = p.suffix.lower()
+        if ext not in {".mp3", ".aac"}:
+            raise ValueError(f"bgm 仅支持 mp3 或 aac: {p}")
+        if state_name in mapping:
+            raise ValueError(f"--bgms 中状态重复: {state_name}")
+        mapping[state_name] = p
+    return mapping
 
 
 def _parse_state_input_groups(input_imgs: List[str], state_names: List[str]) -> List[List[str]]:
@@ -348,6 +361,7 @@ def ani2dEncode(
     input_imgs: List[str],
     base_dir: Path,
     state_names_raw: Optional[str] = None,
+    bgms_raw: Optional[str] = None,
     fps: int = 10,
     durations_ms: Optional[List[int]] = None,
     padding: int = 0,
@@ -356,6 +370,7 @@ def ani2dEncode(
 ) -> Path:
     state_names = _parse_state_names(state_names_raw)
     grouped_inputs = _parse_state_input_groups(input_imgs, state_names)
+    bgm_mapping = _parse_bgms(bgms_raw, state_names)
 
     total_frames = sum(len(g) for g in grouped_inputs)
     flat_durations = _normalize_durations(total_frames, fps=fps, durations_ms=durations_ms)
@@ -406,11 +421,25 @@ def ani2dEncode(
         state_meta["atlas"]["byteSize"] = len(atlas_bytes)
         state_meta["atlas"]["tmpFile"] = str(atlas_tmp_path)
 
+        bgm_path = bgm_mapping.get(state_name)
+        bgm_bytes: Optional[bytes] = None
+        bgm_meta: Optional[Dict[str, Any]] = None
+        if bgm_path is not None:
+            bgm_bytes = bgm_path.read_bytes()
+            codec = bgm_path.suffix.lower().lstrip(".")
+            bgm_meta = {
+                "codec": codec,
+                "byteSize": len(bgm_bytes),
+                "fileName": bgm_path.name,
+            }
+        state_meta["bgm"] = bgm_meta
+
         state_assets.append(
             {
                 "name": state_name,
                 "atlasImage": atlas_image,
                 "atlasBytes": atlas_bytes,
+                "bgmBytes": bgm_bytes,
                 "meta": state_meta,
                 "atlasTmpPath": str(atlas_tmp_path),
             }
@@ -421,7 +450,7 @@ def ani2dEncode(
         "version": VERSION,
         "packing": {
             "alignment": ALIGNMENT,
-            "layout": "header+json+state_png_chunks",
+            "layout": "header+json+state_chunks(atlas+optional_bgm)",
         },
         "fps": int(fps),
         "stateCount": len(state_assets),
@@ -450,9 +479,18 @@ def ani2dEncode(
             if chunk_pad:
                 f.write(b"\x00" * chunk_pad)
 
+            bgm_bytes = asset.get("bgmBytes")
+            if bgm_bytes:
+                f.write(bgm_bytes)
+                bgm_pad = _align_pad_len(len(bgm_bytes))
+                if bgm_pad:
+                    f.write(b"\x00" * bgm_pad)
+
     print(f"[ani2dEncode] json : {json_path}")
     for asset in state_assets:
         print(f"[ani2dEncode] state atlas ({asset['name']}): {asset['atlasTmpPath']}")
+        if asset.get("bgmBytes") is not None:
+            print(f"[ani2dEncode] state bgm   ({asset['name']}): {asset['meta']['bgm']['fileName']}")
     print(f"[ani2dEncode] a2d : {a2d_path}")
     return a2d_path
 
@@ -501,11 +539,34 @@ def _read_ani2d(ani_file: Path) -> Ani2dData:
         atlas_bytes = raw[offset:end]
         atlas_img = Image.open(io.BytesIO(atlas_bytes)).convert("RGBA")
 
-        frames = st.get("frames", [])
-        states[st_name] = Ani2dStateData(name=st_name, atlas_image=atlas_img, frames=frames)
-
         offset = end
         offset += _align_pad_len(byte_size)
+
+        bgm_bytes: Optional[bytes] = None
+        bgm_codec: Optional[str] = None
+        bgm_file_name: Optional[str] = None
+        bgm_meta = st.get("bgm")
+        if isinstance(bgm_meta, dict):
+            bgm_size = int(bgm_meta.get("byteSize", 0))
+            if bgm_size > 0:
+                bgm_end = offset + bgm_size
+                if bgm_end > len(raw):
+                    raise ValueError(f"非法 .a2d: 状态 {st_name} 的 bgm 数据不完整")
+                bgm_bytes = raw[offset:bgm_end]
+                bgm_codec = str(bgm_meta.get("codec", "")).strip() or None
+                bgm_file_name = str(bgm_meta.get("fileName", "")).strip() or None
+                offset = bgm_end
+                offset += _align_pad_len(bgm_size)
+
+        frames = st.get("frames", [])
+        states[st_name] = Ani2dStateData(
+            name=st_name,
+            atlas_image=atlas_img,
+            frames=frames,
+            bgm_data=bgm_bytes,
+            bgm_codec=bgm_codec,
+            bgm_file_name=bgm_file_name,
+        )
 
     return Ani2dData(meta=meta, states=states)
 
@@ -526,16 +587,24 @@ def ani2dDecode(
     json_out.write_text(json.dumps(data.meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
     state_atlas_paths: Dict[str, str] = {}
+    state_bgm_paths: Dict[str, str] = {}
     for state_name, st_data in data.states.items():
         atlas_out = tmp_dir / f"decoded_{unique_id}_{_state_dir_name(state_name)}.png"
         st_data.atlas_image.save(atlas_out, format="PNG")
         state_atlas_paths[state_name] = str(atlas_out)
+
+        if st_data.bgm_data is not None:
+            ext = st_data.bgm_codec or "mp3"
+            bgm_out = tmp_dir / f"decoded_{unique_id}_{_state_dir_name(state_name)}.{ext}"
+            bgm_out.write_bytes(st_data.bgm_data)
+            state_bgm_paths[state_name] = str(bgm_out)
 
     result: Dict[str, Any] = {
         "json": str(json_out),
         "stateCount": len(data.states),
         "totalFrameCount": data.meta.get("totalFrameCount", 0),
         "stateAtlases": state_atlas_paths,
+        "stateBgms": state_bgm_paths,
     }
 
     if export_frames:
@@ -548,6 +617,8 @@ def ani2dDecode(
     print(f"[ani2dDecode] json : {result['json']}")
     for st, p in state_atlas_paths.items():
         print(f"[ani2dDecode] state atlas ({st}): {p}")
+    for st, p in state_bgm_paths.items():
+        print(f"[ani2dDecode] state bgm   ({st}): {p}")
     if export_frames:
         print(f"[ani2dDecode] frames: {result['framesDir']}")
 
@@ -649,6 +720,39 @@ def playAni2d(
     print(f"[playAni2d] state: {st_data.name}")
     print(f"[playAni2d] frame count: {len(st_data.frames)}")
 
+    bgm_process: Optional[subprocess.Popen[Any]] = None
+    bgm_temp_file: Optional[Path] = None
+
+    if st_data.bgm_data is not None:
+        codec = (st_data.bgm_codec or "mp3").lower()
+        suffix = ".aac" if codec == "aac" else ".mp3"
+        tmp_root = (base_dir or Path(__file__).resolve().parent) / "tmp"
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        bgm_temp_file = tmp_root / f"play_bgm_{st_data.name}_{uuid.uuid4()}{suffix}"
+        bgm_temp_file.write_bytes(st_data.bgm_data)
+
+        if sys.platform == "darwin" and shutil.which("afplay"):
+            bgm_process = subprocess.Popen(["afplay", str(bgm_temp_file)])
+            print(f"[playAni2d] bgm: {st_data.bgm_file_name or bgm_temp_file.name}")
+        elif shutil.which("ffplay"):
+            bgm_process = subprocess.Popen([
+                "ffplay",
+                "-nodisp",
+                "-autoexit",
+                "-loglevel",
+                "quiet",
+                str(bgm_temp_file),
+            ])
+            print(f"[playAni2d] bgm: {st_data.bgm_file_name or bgm_temp_file.name}")
+        else:
+            print("[playAni2d] bgm 存在，但未找到 afplay/ffplay，跳过音频播放")
+
+    def _cleanup_bgm() -> None:
+        if bgm_process is not None and bgm_process.poll() is None:
+            bgm_process.terminate()
+        if bgm_temp_file is not None and bgm_temp_file.exists():
+            bgm_temp_file.unlink(missing_ok=True)
+
     if debug_save_frames:
         output_root = (base_dir or Path(__file__).resolve().parent) / "tmp"
         debug_dir = output_root / f"debug_play_frames_{uuid.uuid4()}"
@@ -688,6 +792,8 @@ def playAni2d(
                 idx = (idx + 1) % len(rgb_frames)
         finally:
             cv2.destroyAllWindows()
+            _cleanup_bgm()
+        return
 
     if render_mode == "qt_transparent":
         try:
@@ -755,6 +861,7 @@ def playAni2d(
         player.show()
         player.tick()
         app.exec()
+        _cleanup_bgm()
         return
 
     try:
@@ -818,7 +925,10 @@ def playAni2d(
         root.after(max(1, frame_delays_ms[i]), tick)
 
     root.after(0, tick)
-    root.mainloop()
+    try:
+        root.mainloop()
+    finally:
+        _cleanup_bgm()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -841,6 +951,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "状态名列表(逗号分隔)，例如 idle,run。"
             "多状态时 --inputImgs 数量需与状态数量一致，且每项是该状态的逗号分隔序列"
+        ),
+    )
+    p_encode.add_argument(
+        "--bgms",
+        default=None,
+        help=(
+            "可选: 按状态配置 bgm，格式 state1:path1;state2:path2。"
+            "仅支持 mp3/aac"
         ),
     )
     p_encode.add_argument("--fps", type=int, default=10, help="默认帧率，默认 10")
@@ -929,6 +1047,7 @@ def main(argv: List[str] | None = None) -> int:
             args.inputImgs,
             base_dir,
             state_names_raw=args.stateNames,
+            bgms_raw=args.bgms,
             fps=args.fps,
             durations_ms=args.durationsMs,
             padding=args.padding,
