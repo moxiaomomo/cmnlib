@@ -15,6 +15,8 @@ local.properties
 .classpath
 .settings/
 .loadpath
+python/math/media/
+python/media/assets/
 
 # External tool builders
 .externalToolBuilders/
