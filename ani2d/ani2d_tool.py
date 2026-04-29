@@ -14,6 +14,7 @@ import concurrent.futures
 import glob
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -325,6 +326,7 @@ def _build_single_state_atlas(
 
 
 def _build_single_state_raw(
+    workers: int,
     state_name: str,
     images: List[Image.Image],
     names: List[str],
@@ -339,47 +341,69 @@ def _build_single_state_raw(
     if len(images) != len(durations_ms):
         raise ValueError(f"状态 {state_name} durations 数量与帧数不一致")
 
-    frame_bytes: List[bytes] = []
-    frames: List[Dict[str, Any]] = []
     fmt = raw_frame_format.lower().strip()
     if fmt not in {"png", "webp"}:
         raise ValueError("raw_frame_format 仅支持 png 或 webp")
+    
+    def _encode_frame(idx: int, images: List[Image.Image]) -> Tuple[int, List[bytes], List[Dict[str, Any]]]:
+        cur_frame_bytes: List[bytes] = []
+        cur_frames: List[Dict[str, Any]] = []
+        for _, img in enumerate(images):
+            with io.BytesIO() as frame_io:
+                if fmt == "webp":
+                    img.save(
+                        frame_io,
+                        format="WEBP",
+                        quality=max(1, min(100, int(raw_webp_quality))),
+                        lossless=bool(raw_webp_lossless),
+                        method=6,
+                    )
+                else:
+                    img.save(frame_io, format="PNG")
+                png_bytes = frame_io.getvalue()
+                optimizedBy: Optional[str] = None
+                if fmt == "png" and len(png_bytes) > RAW_PNG_OPTIMIZE_THRESHOLD_BYTES:
+                    png_bytes, optimizedBy = _optimize_png_bytes(png_bytes, "auto")
 
-    for idx, img in enumerate(images):
-        frame_io = io.BytesIO()
-        if fmt == "webp":
-            img.save(
-                frame_io,
-                format="WEBP",
-                quality=max(1, min(100, int(raw_webp_quality))),
-                lossless=bool(raw_webp_lossless),
-                method=6,
-            )
-        else:
-            img.save(frame_io, format="PNG")
-        png_bytes = frame_io.getvalue()
-        optimizedBy: Optional[str] = None
-        if fmt == "png" and len(png_bytes) > RAW_PNG_OPTIMIZE_THRESHOLD_BYTES:
-            png_bytes, optimizedBy = _optimize_png_bytes(png_bytes, "auto")
+                cur_frame_bytes.append(png_bytes)
+                src_name = names[idx]
+                src_path = Path(src_name)
+                frame_name = f"{src_path.stem}.{fmt}" if src_path.suffix else f"{src_name}.{fmt}"
 
-        frame_bytes.append(png_bytes)
+                cur_frames.append(
+                    {
+                        "index": idx,
+                        "name": frame_name,
+                        "w": img.width,
+                        "h": img.height,
+                        "durationMs": int(durations_ms[idx]),
+                        "byteSize": len(png_bytes),
+                        "format": fmt,
+                        "optimizedBy": optimizedBy if fmt == "png" else None,
+                    }
+                )
+        return idx, cur_frame_bytes, cur_frames
 
-        src_name = names[idx]
-        src_path = Path(src_name)
-        frame_name = f"{src_path.stem}.{fmt}" if src_path.suffix else f"{src_name}.{fmt}"
-
-        frames.append(
-            {
-                "index": idx,
-                "name": frame_name,
-                "w": img.width,
-                "h": img.height,
-                "durationMs": int(durations_ms[idx]),
-                "byteSize": len(png_bytes),
-                "format": fmt,
-                "optimizedBy": optimizedBy if fmt == "png" else None,
+    frame_bytes: List[bytes] = []
+    frames: List[Dict[str, Any]] = []
+    if workers <= 1:
+        _, frame_bytes, frames = _encode_frame(0, images)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            each_frame_count = math.ceil(len(images) / workers)
+            future_to_idx = {
+                executor.submit(_encode_frame, idx, images[idx * each_frame_count:(idx + 1) * each_frame_count]): idx
+                for idx in range(workers)
             }
-        )
+            for future in concurrent.futures.as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    _, cur_frame_bytes, cur_frames = future.result()
+                    frame_bytes.extend(cur_frame_bytes)
+                    frames.extend(cur_frames)
+                    print(f"[encode] state={state_name}, worker={idx}, encoded {len(cur_frames)} frames, totalEncoded={len(frames)} frames")
+                except Exception as exc:
+                    raise RuntimeError(f"状态 {state_name} 的帧 {idx} 编码失败: {exc}") from exc
 
     meta = {
         "name": state_name,
@@ -388,6 +412,8 @@ def _build_single_state_raw(
         "storage": "raw",
         "frames": frames,
     }
+    print(f"[ani2dEncode] state={state_name}, workers={workers}, each_frame_count={each_frame_count}," 
+          f" fps={fps}, len(frames)={len(frames)}, totalRawSize={sum(len(b) for b in frame_bytes)} bytes")
     return frame_bytes, meta
 
 
@@ -607,14 +633,14 @@ def _ani2dEncode(
         state_durations = flat_durations[duration_offset:duration_offset + state_frame_count]
         duration_offset += state_frame_count
         state_jobs.append((state_idx, state_name, state_inputs, state_durations))
-
     print(
         f"[ani2dEncode] 开始处理状态帧数据，size_mode={size_mode}, atlas_optimize={atlas_optimize}, "
-        f"raw_frame_format={raw_frame_format}, raw_force_threshold={raw_force_threshold_mb} MB, workers={workers}"
+        f"raw_frame_format={raw_frame_format}, raw_force_threshold={raw_force_threshold_mb} MB, workers={workers} len(state_jobs)={len(state_jobs)}"
     )
 
-    def _build_state_asset(job: Tuple[int, str, List[str], List[int]]) -> Tuple[int, Dict[str, Any]]:
+    def _build_state_asset(workers:int, job: Tuple[int, str, List[str], List[int]]) -> Tuple[int, Dict[str, Any]]:
         state_idx, state_name, state_inputs, state_durations = job
+        print(f"[ani2dEncode] 处理状态, idx:{state_idx} state_name:{state_name} frame_count:{len(state_inputs)}")
         img_paths = [Path(p).expanduser().resolve() for p in state_inputs]
         for p in img_paths:
             if not p.exists():
@@ -642,6 +668,7 @@ def _ani2dEncode(
                 )
 
         raw_frame_bytes, raw_state_meta = _build_single_state_raw(
+            workers=workers,
             state_name=state_name,
             images=images,
             names=names,
@@ -743,12 +770,14 @@ def _ani2dEncode(
     state_assets: List[Optional[Dict[str, Any]]] = [None] * len(state_jobs)
     if workers == 1 or len(state_jobs) <= 1:
         for job in state_jobs:
-            idx, asset = _build_state_asset(job)
+            idx, asset = _build_state_asset(workers, job)
             state_assets[idx] = asset
     else:
         max_workers = min(workers, len(state_jobs))
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_map = {executor.submit(_build_state_asset, job): job[0] for job in state_jobs}
+            # 以线程池方式并发处理状态资产构建，适合 I/O 密集型任务（如图像处理和文件读写）
+            # 外层已经应用了并发，_build_state_asset内部不再使用多线程，避免过度并发导致性能下降，因此workers设为1
+            future_map = {executor.submit(_build_state_asset, 1, job): job[0] for job in state_jobs}
             for future in concurrent.futures.as_completed(future_map):
                 idx, asset = future.result()
                 state_assets[idx] = asset

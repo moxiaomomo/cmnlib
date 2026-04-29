@@ -1,3 +1,11 @@
+## 通过Swift的Visison框架抠图
+
+```
+REMOVEBG_PNGQUANT=1 ./removebg 1 ./input/pigRelax/ ./output/pigRelax/ --outputFmt png
+
+./removebg 1 ./input/pigStudy/ ./output/pigStudy/ --outputFmt webp --webpQuality 100
+```
+
 
 ## A2D文件操作说明
 
@@ -10,15 +18,35 @@ python ani2d_tool.py encode \
   --sizeMode auto \
   --atlasOptimize auto \
   --aniFile output/pigSleep.a2d \
-  --rawFrameFormat=webp
+  --rawFrameFormat webp
 
-  python ani2d_tool.py encode \
-  --inputImgs "../swift/output/pigTalk/%03d.webp" \
+python ani2d_tool.py encode \
+  --inputImgs "../swift/output/pigWorking/%03d.webp" \
   --stateNames default \
-  --fps 20 \
+  --fps 15 \
   --sizeMode auto \
   --atlasOptimize auto \
-  --aniFile output/pigTalk.a2d \ 
-  --rawFrameFormat=webp \
-  --workers=4   
+  --aniFile output/pigWork.a2d \
+  --rawFrameFormat webp \
+  --workers 8
 ```
+
+python ani2d_tool.py encode \
+  --inputImgs "../swift/output/pigWork/%03d.webp" \
+  --stateNames default \
+  --fps 15 \
+  --sizeMode auto \
+  --atlasOptimize auto \
+  --aniFile output/pigWorking.a2d \ 
+  --rawFrameFormat=webp \
+  --workers=8
+
+python ani2d_tool.py encode \
+  --inputImgs "../swift/output/pigWorking/%03d.webp" \
+  --stateNames default \
+  --fps 15 \
+  --sizeMode auto \
+  --atlasOptimize auto \
+  --aniFile output/pigWork.a2d \
+  --rawFrameFormat webp \
+--workers=4

@@ -381,32 +381,57 @@ else if typeStr == "1" {
         exit(0)
     }
     
-    print("🚀 发现 \(imageFiles.count) 张图片，开始批量处理，输出格式: \(outputFormat.displayName)...\n")
+    let workerCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
+    print("🚀 发现 \(imageFiles.count) 张图片，开始批量处理，输出格式: \(outputFormat.displayName)，并发线程: \(workerCount)...\n")
     
     var successCount = 0
     var failCount = 0
     
+    let statsQueue = DispatchQueue(label: "removebg.stats")
+    let logQueue = DispatchQueue(label: "removebg.log")
+    let queue = OperationQueue()
+    queue.maxConcurrentOperationCount = workerCount
+    queue.qualityOfService = .userInitiated
+
     for (index, fileName) in imageFiles.enumerated() {
-        let fullInputPath = (inputPath as NSString).appendingPathComponent(fileName)
-        let filenameWithoutExt = (fileName as NSString).deletingPathExtension
-        let outputFileName = "\(filenameWithoutExt).\(outputFormat.fileExtension)"
-        let fullOutputPath = (outputPath as NSString).appendingPathComponent(outputFileName)
-        
-        if fileManager.fileExists(atPath: fullOutputPath) {
-            print("[\(index + 1)/\(imageFiles.count)] ⏭️  跳过已存在: \(outputFileName)")
-            successCount += 1
-            continue
-        }
-        
-        print("[\(index + 1)/\(imageFiles.count)] 🧠 处理中: \(fileName) -> \(outputFileName)")
-        
-        // 因为 processSingleImage 内部有了 autoreleasepool，这里批量跑多少张都不会内存泄漏或崩溃
-        if processSingleImage(inputPath: fullInputPath, outputPath: fullOutputPath, outputFormat: outputFormat, webpQuality: webpQuality) {
-            successCount += 1
-        } else {
-            failCount += 1
+        queue.addOperation {
+            let fullInputPath = (inputPath as NSString).appendingPathComponent(fileName)
+            let filenameWithoutExt = (fileName as NSString).deletingPathExtension
+            let outputFileName = "\(filenameWithoutExt).\(outputFormat.fileExtension)"
+            let fullOutputPath = (outputPath as NSString).appendingPathComponent(outputFileName)
+
+            if fileManager.fileExists(atPath: fullOutputPath) {
+                logQueue.sync {
+                    print("[\(index + 1)/\(imageFiles.count)] ⏭️  跳过已存在: \(outputFileName)")
+                }
+                statsQueue.sync {
+                    successCount += 1
+                }
+                return
+            }
+
+            logQueue.sync {
+                print("[\(index + 1)/\(imageFiles.count)] 🧠 处理中: \(fileName) -> \(outputFileName)")
+            }
+
+            // processSingleImage 内部有 autoreleasepool，适合并发批处理
+            let ok = processSingleImage(
+                inputPath: fullInputPath,
+                outputPath: fullOutputPath,
+                outputFormat: outputFormat,
+                webpQuality: webpQuality
+            )
+            statsQueue.sync {
+                if ok {
+                    successCount += 1
+                } else {
+                    failCount += 1
+                }
+            }
         }
     }
+
+    queue.waitUntilAllOperationsAreFinished()
     
     print("\n🎉 批量处理完成！")
     print("   ✅ 成功: \(successCount) 张")
