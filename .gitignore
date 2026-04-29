@@ -25,6 +25,7 @@ python/media/assets/
 swift/pigJpg/
 swift/pigJpg_rmbg/
 swift/removebg
+swift/removebg*test
 
 # External tool builders
 .externalToolBuilders/
