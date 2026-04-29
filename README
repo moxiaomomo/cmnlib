@@ -1,1 +1,24 @@
-Here are common functions written in java/javascript/python/shell or any language else, that someone can use them if necessary.
+
+## A2D文件操作说明
+
+### 将webp序列打包封装到a2d文件
+```
+python ani2d_tool.py encode \
+  --inputImgs "../swift/output/pigSleep/%03d.webp" \
+  --stateNames default \
+  --fps 15 \
+  --sizeMode auto \
+  --atlasOptimize auto \
+  --aniFile output/pigSleep.a2d \
+  --rawFrameFormat=webp
+
+  python ani2d_tool.py encode \
+  --inputImgs "../swift/output/pigTalk/%03d.webp" \
+  --stateNames default \
+  --fps 20 \
+  --sizeMode auto \
+  --atlasOptimize auto \
+  --aniFile output/pigTalk.a2d \ 
+  --rawFrameFormat=webp \
+  --workers=4   
+```

@@ -16,8 +16,10 @@ local.properties
 .settings/
 .loadpath
 
-ani2d/output/
-ani2d/tmp/
+*/input/
+*/output/
+*/tmp/
+
 swift/pigJpg/
 swift/pigJpg_rmbg/
 swift/removebg
