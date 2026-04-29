@@ -2,8 +2,6 @@ import akshare as ak
 import matplotlib.pyplot as plt
 import pandas as pd
 from mplfinance.original_flavor import candlestick_ohlc
-import matplotlib.dates as mdates
-import numpy as np
 import matplotlib.ticker as ticker
 
 # 先设定一个日期转换方法
@@ -21,15 +19,14 @@ plt.rcParams["axes.unicode_minus"] = False  # 用来正常显示负号
 # 获取股票数据
 stock_name = "广联航空"
 stock_code = "300900"
-start_date = "20250201"
-end_date = "20250825"
+start_date = "20251201"
+end_date = "20260203"
 
 print(f"正在获取股票 {stock_code} 从 {start_date} 到 {end_date} 的历史行情数据...")
 stock_data = ak.stock_zh_a_hist(
     symbol=stock_code, start_date=start_date, end_date=end_date, adjust="qfq"
 )
 #print(stock_data)
-
 
 # 将日期列转换为 matplotlib 可识别的日期格式
 # stock_data["日期"] = pd.to_datetime(stock_data["日期"]).apply(

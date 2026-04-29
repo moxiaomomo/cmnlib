@@ -1,6 +1,12 @@
+import datetime
+import random
 import akshare as ak
 import pandas as pd
-from pprint import pprint
+
+def generate_nid():
+    nid = ''.join(random.choices('0123456789abcdefghijklmnopqrstuvwxyz', k=32))
+    create_time = int(datetime.now().timestamp()*1000)
+    return nid, create_time
 
 def filter_stocks_by_market_cap(min_cap, max_cap, min_price, max_price, min_turnover, max_turnover, min_price2book, max_price2book):
     """
@@ -13,12 +19,18 @@ def filter_stocks_by_market_cap(min_cap, max_cap, min_price, max_price, min_turn
     返回:
     符合条件的股票DataFrame
     """
+    
+    nid, create_time = generate_nid
+    headers = {
+        "cookie": f"nid18={nid}; nid18_create_time={create_time};",
+    }
+    
     # 获取A股实时行情数据（包含总市值）
     stock_df = ak.stock_zh_a_spot_em()
     
     # 查看数据中市值列的名称，通常是"总市值"
     # print(stock_df.columns)
-    print(stock_df[0:3])
+    print(len(stock_df))
     
     # 1.过滤出市值在指定区间的股票
     # 注意：市值数据可能是字符串类型，需要转换为数值型
@@ -54,8 +66,8 @@ def filter_stocks_by_market_cap(min_cap, max_cap, min_price, max_price, min_turn
 
     return filtered_df
 
-# 示例：筛选总市值在50亿到3000亿之间、股价在6～40元、换手率在1%~10%之间的、非科创板的股票,
-result = filter_stocks_by_market_cap(5000000000, 300000000000, 6, 40, 1, 10, 0.5, 4)
+# 示例：筛选总市值在50亿到3000亿之间、股价在6～30元、换手率在1%~15%之间的、非科创板的股票
+result = filter_stocks_by_market_cap(5000000000, 300000000000, 6, 30, 1, 15, 0.5, 4)
 print(f"符合搜索调教的股票共有{len(result)}只。")
 #print(result[["代码", "名称", "总市值"]])
 for i in range(int(len(result)/10)):
