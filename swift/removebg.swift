@@ -5,6 +5,12 @@ import AppKit
 import ImageIO
 import UniformTypeIdentifiers
 
+struct RemoveBGOptions {
+    var maskDilateRadius: Double
+    var maskBlurRadius: Double
+    var minForegroundRatio: Double
+}
+
 enum OutputFormat: String {
     case png
     case webp
@@ -25,6 +31,34 @@ enum OutputFormat: String {
             return UTType(filenameExtension: "webp")?.identifier as CFString?
         }
     }
+}
+
+func estimateForegroundRatio(maskPixelBuffer: CVPixelBuffer) -> Double {
+    CVPixelBufferLockBaseAddress(maskPixelBuffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(maskPixelBuffer, .readOnly) }
+
+    let width = CVPixelBufferGetWidth(maskPixelBuffer)
+    let height = CVPixelBufferGetHeight(maskPixelBuffer)
+    let bytesPerRow = CVPixelBufferGetBytesPerRow(maskPixelBuffer)
+    guard let baseAddress = CVPixelBufferGetBaseAddress(maskPixelBuffer) else {
+        return 0.0
+    }
+
+    let ptr = baseAddress.bindMemory(to: UInt8.self, capacity: bytesPerRow * height)
+    var nonZeroCount = 0
+    let threshold: UInt8 = 16
+
+    for y in 0..<height {
+        let rowStart = ptr.advanced(by: y * bytesPerRow)
+        for x in 0..<width {
+            if rowStart[x] > threshold {
+                nonZeroCount += 1
+            }
+        }
+    }
+
+    let total = max(1, width * height)
+    return Double(nonZeroCount) / Double(total)
 }
 
 func runProcess(executablePath: String, arguments: [String]) -> Bool {
@@ -188,7 +222,13 @@ func tryOptimizePNGWithPngquant(filePath: String) {
 }
 
 // MARK: - 核心逻辑：处理单张图片
-func processSingleImage(inputPath: String, outputPath: String, outputFormat: OutputFormat, webpQuality: Int) -> Bool {
+func processSingleImage(
+    inputPath: String,
+    outputPath: String,
+    outputFormat: OutputFormat,
+    webpQuality: Int,
+    options: RemoveBGOptions
+) -> Bool {
     // 命令行工具批量处理大量图片时，显式包一层 autoreleasepool，
     // 避免 AppKit/CoreImage/Vision 临时对象累计过多。
     return autoreleasepool {
@@ -214,11 +254,48 @@ func processSingleImage(inputPath: String, outputPath: String, outputFormat: Out
             }
 
             let maskPixelBuffer = try result.generateScaledMaskForImage(forInstances: result.allInstances, from: handler)
+            let foregroundRatio = estimateForegroundRatio(maskPixelBuffer: maskPixelBuffer)
+            if options.minForegroundRatio > 0, foregroundRatio < options.minForegroundRatio {
+                fputs("   ⚠️ 前景占比过低(\(String(format: "%.3f", foregroundRatio)))，保留原图: \(inputPath)\n", stderr)
+
+                let outputDir = (outputPath as NSString).deletingLastPathComponent
+                if !FileManager.default.fileExists(atPath: outputDir) {
+                    try? FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
+                }
+
+                guard writeImage(cgImage: cgImage, outputPath: outputPath, format: outputFormat, webpQuality: webpQuality) else {
+                    return false
+                }
+                if outputFormat == .png {
+                    tryOptimizePNGWithPngquant(filePath: outputPath)
+                }
+                return true
+            }
+
             let ciContext = CIContext(options: [.useSoftwareRenderer: false])
             let originalCIImage = CIImage(cgImage: cgImage)
-            let maskCIImage = CIImage(cvPixelBuffer: maskPixelBuffer)
+            var maskCIImage = CIImage(cvPixelBuffer: maskPixelBuffer)
+
+            if options.maskDilateRadius > 0,
+               let dilateFilter = CIFilter(name: "CIMorphologyMaximum") {
+                dilateFilter.setValue(maskCIImage, forKey: kCIInputImageKey)
+                dilateFilter.setValue(options.maskDilateRadius, forKey: kCIInputRadiusKey)
+                if let out = dilateFilter.outputImage {
+                    maskCIImage = out
+                }
+            }
+
+            if options.maskBlurRadius > 0,
+               let blurFilter = CIFilter(name: "CIGaussianBlur") {
+                blurFilter.setValue(maskCIImage, forKey: kCIInputImageKey)
+                blurFilter.setValue(options.maskBlurRadius, forKey: kCIInputRadiusKey)
+                if let out = blurFilter.outputImage {
+                    maskCIImage = out
+                }
+            }
             
             let extent = originalCIImage.extent
+            maskCIImage = maskCIImage.cropped(to: extent)
             let clearImage = CIImage(color: CIColor.clear).cropped(to: extent)
 
             guard let filter = CIFilter(name: "CIBlendWithMask") else { return false }
@@ -264,6 +341,9 @@ guard args.count >= 4 else {
     ╔════════════════════════════════════════════════════════════════════════════╗
     ║   Usage: removebg <type> <input> <output> [--outputFmt png|webp]          ║
     ║                                          [--webpQuality 0-100]             ║
+    ║                                          [--maskDilate 0-50]               ║
+    ║                                          [--maskBlur 0-20]                 ║
+    ║                                          [--minForegroundRatio 0-1]        ║
     ║                                                                            ║
     ║   type=0: 单图模式                                                          ║
     ║     removebg 0 input.jpg output.png                                         ║
@@ -284,6 +364,9 @@ var outputPath = args[3]
 
 var outputFormat: OutputFormat = .png
 var webpQuality = 82
+var maskDilate: Double = 0
+var maskBlur: Double = 0
+var minForegroundRatio: Double = 0
 
 guard (args.count - 4) % 2 == 0 else {
     fputs("❌ 可选参数必须成对出现，例如 --outputFmt webp --webpQuality 80\n", stderr)
@@ -308,6 +391,24 @@ while optionIndex < args.count {
             exit(1)
         }
         webpQuality = parsedQuality
+    case "--maskDilate":
+        guard let parsedDilate = Double(value), (0...50).contains(parsedDilate) else {
+            fputs("❌ --maskDilate 必须是 0 到 50 之间的数字\n", stderr)
+            exit(1)
+        }
+        maskDilate = parsedDilate
+    case "--maskBlur":
+        guard let parsedBlur = Double(value), (0...20).contains(parsedBlur) else {
+            fputs("❌ --maskBlur 必须是 0 到 20 之间的数字\n", stderr)
+            exit(1)
+        }
+        maskBlur = parsedBlur
+    case "--minForegroundRatio":
+        guard let parsedRatio = Double(value), (0...1).contains(parsedRatio) else {
+            fputs("❌ --minForegroundRatio 必须是 0 到 1 之间的数字\n", stderr)
+            exit(1)
+        }
+        minForegroundRatio = parsedRatio
     default:
         fputs("❌ 未知参数: \(option)\n", stderr)
         exit(1)
@@ -322,6 +423,11 @@ guard typeStr == "0" || typeStr == "1" else {
 }
 
 let fileManager = FileManager.default
+let removeBGOptions = RemoveBGOptions(
+    maskDilateRadius: maskDilate,
+    maskBlurRadius: maskBlur,
+    minForegroundRatio: minForegroundRatio
+)
 
 // --------------------------------------------------
 // 模式 0：单张图片处理
@@ -336,7 +442,13 @@ if typeStr == "0" {
     outputPath = forceOutputExtension(for: outputPath, format: outputFormat)
     
     print("📸 开始处理单张图片，输出格式: \(outputFormat.displayName)...")
-    if processSingleImage(inputPath: inputPath, outputPath: outputPath, outputFormat: outputFormat, webpQuality: webpQuality) {
+    if processSingleImage(
+        inputPath: inputPath,
+        outputPath: outputPath,
+        outputFormat: outputFormat,
+        webpQuality: webpQuality,
+        options: removeBGOptions
+    ) {
         print("✅ 抠图完成，已保存至: \(outputPath)")
     } else {
         fputs("❌ 处理失败\n", stderr)
@@ -419,7 +531,8 @@ else if typeStr == "1" {
                 inputPath: fullInputPath,
                 outputPath: fullOutputPath,
                 outputFormat: outputFormat,
-                webpQuality: webpQuality
+                webpQuality: webpQuality,
+                options: removeBGOptions
             )
             statsQueue.sync {
                 if ok {

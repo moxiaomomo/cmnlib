@@ -345,10 +345,15 @@ def _build_single_state_raw(
     if fmt not in {"png", "webp"}:
         raise ValueError("raw_frame_format 仅支持 png 或 webp")
     
-    def _encode_frame(idx: int, images: List[Image.Image]) -> Tuple[int, List[bytes], List[Dict[str, Any]]]:
+    def _encode_frame(
+        worker_idx: int,
+        start_idx: int,
+        chunk_images: List[Image.Image],
+    ) -> Tuple[int, List[bytes], List[Dict[str, Any]]]:
         cur_frame_bytes: List[bytes] = []
         cur_frames: List[Dict[str, Any]] = []
-        for _, img in enumerate(images):
+        for offset, img in enumerate(chunk_images):
+            frame_idx = start_idx + offset
             with io.BytesIO() as frame_io:
                 if fmt == "webp":
                     img.save(
@@ -366,44 +371,64 @@ def _build_single_state_raw(
                     png_bytes, optimizedBy = _optimize_png_bytes(png_bytes, "auto")
 
                 cur_frame_bytes.append(png_bytes)
-                src_name = names[idx]
+                src_name = names[frame_idx]
                 src_path = Path(src_name)
                 frame_name = f"{src_path.stem}.{fmt}" if src_path.suffix else f"{src_name}.{fmt}"
 
                 cur_frames.append(
                     {
-                        "index": idx,
+                        "index": frame_idx,
                         "name": frame_name,
                         "w": img.width,
                         "h": img.height,
-                        "durationMs": int(durations_ms[idx]),
+                        "durationMs": int(durations_ms[frame_idx]),
                         "byteSize": len(png_bytes),
                         "format": fmt,
                         "optimizedBy": optimizedBy if fmt == "png" else None,
                     }
                 )
-        return idx, cur_frame_bytes, cur_frames
+        return worker_idx, cur_frame_bytes, cur_frames
 
     frame_bytes: List[bytes] = []
     frames: List[Dict[str, Any]] = []
+    each_frame_count = math.ceil(len(images) / workers)
     if workers <= 1:
-        _, frame_bytes, frames = _encode_frame(0, images)
+        _, frame_bytes, frames = _encode_frame(0, 0, images)
     else:
+        chunk_jobs = []
+        for idx in range(workers):
+            start_idx = idx * each_frame_count
+            end_idx = min(len(images), (idx + 1) * each_frame_count)
+            if start_idx >= len(images):
+                break
+            chunk_jobs.append((idx, start_idx, images[start_idx:end_idx]))
+
+        ordered_results: List[Optional[Tuple[List[bytes], List[Dict[str, Any]]]]] = [None] * len(chunk_jobs)
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            each_frame_count = math.ceil(len(images) / workers)
             future_to_idx = {
-                executor.submit(_encode_frame, idx, images[idx * each_frame_count:(idx + 1) * each_frame_count]): idx
-                for idx in range(workers)
+                executor.submit(_encode_frame, worker_idx, start_idx, chunk_images): worker_idx
+                for worker_idx, start_idx, chunk_images in chunk_jobs
             }
             for future in concurrent.futures.as_completed(future_to_idx):
                 idx = future_to_idx[future]
                 try:
                     _, cur_frame_bytes, cur_frames = future.result()
-                    frame_bytes.extend(cur_frame_bytes)
-                    frames.extend(cur_frames)
+                    ordered_results[idx] = (cur_frame_bytes, cur_frames)
                     print(f"[encode] state={state_name}, worker={idx}, encoded {len(cur_frames)} frames, totalEncoded={len(frames)} frames")
                 except Exception as exc:
                     raise RuntimeError(f"状态 {state_name} 的帧 {idx} 编码失败: {exc}") from exc
+
+        merged_count = 0
+        for worker_idx, result in enumerate(ordered_results):
+            if result is None:
+                raise RuntimeError(f"状态 {state_name} 的 worker {worker_idx} 未返回结果")
+            cur_frame_bytes, cur_frames = result
+            frame_bytes.extend(cur_frame_bytes)
+            frames.extend(cur_frames)
+            merged_count += len(cur_frames)
+            print(
+                f"[encode] state={state_name}, merged worker={worker_idx}, mergedFrames={len(cur_frames)}, totalMerged={merged_count} frames"
+            )
 
     meta = {
         "name": state_name,

@@ -6,6 +6,14 @@ REMOVEBG_PNGQUANT=1 ./removebg 1 ./input/pigRelax/ ./output/pigRelax/ --outputFm
 ./removebg 1 ./input/pigStudy/ ./output/pigStudy/ --outputFmt webp --webpQuality 100
 ```
 
+## 解决通过ffmpeg将webp序列合并为mp4视频时出现明显锯齿的问题
+
+```
+# 如果你的视频最终是要放在浅色背景上播放的，不要让 FFmpeg 默认用黑色填充透明区域，而是主动给视频垫一个与你最终播放环境相近的背景色（比如白色）。
+# 注意：请将 s=1920x1080 替换为你原始 WebP 图片的真实分辨率。
+# 原理：先将半透明的像素与白色背景进行正确的 Alpha 混合，生成没有透明通道但边缘平滑的帧，然后再转为 yuv420p。这样在浅色背景下播放时，锯齿感会大幅降低。
+ffmpeg -framerate 20 -i %03d.webp -vf "color=c=black:s=1080x1080,format=rgba[bg];[0:v]format=rgba[fg];[bg][fg]overlay=format=auto,format=yuv420p" -t 5 output.mp4
+```
 
 ## A2D文件操作说明
 
@@ -30,23 +38,3 @@ python ani2d_tool.py encode \
   --rawFrameFormat webp \
   --workers 8
 ```
-
-python ani2d_tool.py encode \
-  --inputImgs "../swift/output/pigWork/%03d.webp" \
-  --stateNames default \
-  --fps 15 \
-  --sizeMode auto \
-  --atlasOptimize auto \
-  --aniFile output/pigWorking.a2d \ 
-  --rawFrameFormat=webp \
-  --workers=8
-
-python ani2d_tool.py encode \
-  --inputImgs "../swift/output/pigWorking/%03d.webp" \
-  --stateNames default \
-  --fps 15 \
-  --sizeMode auto \
-  --atlasOptimize auto \
-  --aniFile output/pigWork.a2d \
-  --rawFrameFormat webp \
---workers=4
