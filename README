@@ -1,6 +1,8 @@
 ## 通过Swift的Visison框架抠图
 
 ```
+swiftc removebg.swift -o removebg
+
 REMOVEBG_PNGQUANT=1 ./removebg 1 ./input/pigRelax/ ./output/pigRelax/ --outputFmt png
 
 ./removebg 1 ./input/pigStudy/ ./output/pigStudy/ --outputFmt webp --webpQuality 100

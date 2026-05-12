@@ -6,9 +6,43 @@ import ImageIO
 import UniformTypeIdentifiers
 
 struct RemoveBGOptions {
+    var backgroundMode: BackgroundMode
     var maskDilateRadius: Double
     var maskBlurRadius: Double
     var minForegroundRatio: Double
+    var chromaKeyThreshold: Double
+    var chromaKeySoftness: Double
+    var chromaKeyMinimumGreen: Double
+}
+
+enum BackgroundMode {
+    case vision
+    case chromaKey
+    case hybrid
+
+    var displayName: String {
+        switch self {
+        case .vision:
+            return "vision"
+        case .chromaKey:
+            return "chromaKey"
+        case .hybrid:
+            return "hybrid"
+        }
+    }
+
+    static func parse(_ value: String) -> BackgroundMode? {
+        switch value.lowercased() {
+        case "vision":
+            return .vision
+        case "chromakey", "chroma_key", "chroma-key":
+            return .chromaKey
+        case "hybrid":
+            return .hybrid
+        default:
+            return nil
+        }
+    }
 }
 
 enum OutputFormat: String {
@@ -59,6 +93,127 @@ func estimateForegroundRatio(maskPixelBuffer: CVPixelBuffer) -> Double {
 
     let total = max(1, width * height)
     return Double(nonZeroCount) / Double(total)
+}
+
+func estimateForegroundRatio(maskCGImage: CGImage) -> Double {
+    let width = maskCGImage.width
+    let height = maskCGImage.height
+    guard width > 0, height > 0 else {
+        return 0.0
+    }
+
+    var pixels = [UInt8](repeating: 0, count: width * height)
+    guard
+        let colorSpace = CGColorSpace(name: CGColorSpace.genericGrayGamma2_2),
+        let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        )
+    else {
+        return 0.0
+    }
+
+    context.draw(maskCGImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+    let threshold: UInt8 = 16
+    let nonZeroCount = pixels.reduce(0) { partial, value in
+        partial + (value > threshold ? 1 : 0)
+    }
+    return Double(nonZeroCount) / Double(max(1, width * height))
+}
+
+func clamp01(_ value: Double) -> Double {
+    min(max(value, 0.0), 1.0)
+}
+
+func generateVisionMask(cgImage: CGImage) throws -> (maskCIImage: CIImage, foregroundRatio: Double) {
+    let request = VNGenerateForegroundInstanceMaskRequest()
+    let handler = VNImageRequestHandler(cgImage: cgImage)
+    try handler.perform([request])
+
+    guard let result = request.results?.first else {
+        throw NSError(domain: "RemoveBG", code: 1, userInfo: [NSLocalizedDescriptionKey: "未检测到前景主体"])
+    }
+
+    let maskPixelBuffer = try result.generateScaledMaskForImage(forInstances: result.allInstances, from: handler)
+    let foregroundRatio = estimateForegroundRatio(maskPixelBuffer: maskPixelBuffer)
+    return (CIImage(cvPixelBuffer: maskPixelBuffer), foregroundRatio)
+}
+
+func generateChromaKeyMaskCGImage(cgImage: CGImage, options: RemoveBGOptions) -> CGImage? {
+    let width = cgImage.width
+    let height = cgImage.height
+    guard width > 0, height > 0 else {
+        return nil
+    }
+
+    var rgbaPixels = [UInt8](repeating: 0, count: width * height * 4)
+    guard
+        let rgbColorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+        let rgbContext = CGContext(
+            data: &rgbaPixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: rgbColorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+    else {
+        return nil
+    }
+
+    rgbContext.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+    let threshold = options.chromaKeyThreshold
+    let softness = max(0.001, options.chromaKeySoftness)
+    let minimumGreen = max(0.0, min(options.chromaKeyMinimumGreen, 1.0))
+
+    var maskPixels = [UInt8](repeating: 0, count: width * height)
+    for pixelIndex in 0..<(width * height) {
+        let rgbaIndex = pixelIndex * 4
+        let r = Double(rgbaPixels[rgbaIndex]) / 255.0
+        let g = Double(rgbaPixels[rgbaIndex + 1]) / 255.0
+        let b = Double(rgbaPixels[rgbaIndex + 2]) / 255.0
+        let a = Double(rgbaPixels[rgbaIndex + 3]) / 255.0
+
+        let dominance = g - max(r, b)
+        let greenRatio = g / max(0.0001, r + g + b)
+
+        var backgroundScore = clamp01((dominance - threshold) / softness)
+        if greenRatio < minimumGreen {
+            backgroundScore *= clamp01(greenRatio / max(0.0001, minimumGreen))
+        }
+
+        let foregroundAlpha = clamp01((1.0 - backgroundScore) * a)
+        maskPixels[pixelIndex] = UInt8(clamp01(foregroundAlpha) * 255.0)
+    }
+
+    guard
+        let grayColorSpace = CGColorSpace(name: CGColorSpace.genericGrayGamma2_2),
+        let provider = CGDataProvider(data: Data(maskPixels) as CFData)
+    else {
+        return nil
+    }
+
+    return CGImage(
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bitsPerPixel: 8,
+        bytesPerRow: width,
+        space: grayColorSpace,
+        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+        provider: provider,
+        decode: nil,
+        shouldInterpolate: false,
+        intent: .defaultIntent
+    )
 }
 
 func runProcess(executablePath: String, arguments: [String]) -> Bool {
@@ -241,20 +396,53 @@ func processSingleImage(
             fputs("   ❌ 无法转换为 CGImage\n", stderr)
             return false
         }
-
-        let request = VNGenerateForegroundInstanceMaskRequest()
+        let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+        let originalCIImage = CIImage(cgImage: cgImage)
+        let extent = originalCIImage.extent
 
         do {
-            let handler = VNImageRequestHandler(cgImage: cgImage)
-            try handler.perform([request])
+            let maskCIImage: CIImage
+            let foregroundRatio: Double
 
-            guard let result = request.results?.first else {
-                fputs("   ❌ 未检测到前景主体\n", stderr)
-                return false
+            switch options.backgroundMode {
+            case .vision:
+                let visionMask = try generateVisionMask(cgImage: cgImage)
+                maskCIImage = visionMask.maskCIImage
+                foregroundRatio = visionMask.foregroundRatio
+            case .chromaKey:
+                guard let chromaMaskCGImage = generateChromaKeyMaskCGImage(cgImage: cgImage, options: options) else {
+                    fputs("   ❌ 绿幕抠图 mask 生成失败\n", stderr)
+                    return false
+                }
+                maskCIImage = CIImage(cgImage: chromaMaskCGImage)
+                foregroundRatio = estimateForegroundRatio(maskCGImage: chromaMaskCGImage)
+            case .hybrid:
+                guard let chromaMaskCGImage = generateChromaKeyMaskCGImage(cgImage: cgImage, options: options) else {
+                    fputs("   ❌ hybrid 模式下绿幕 mask 生成失败\n", stderr)
+                    return false
+                }
+
+                let chromaMaskCIImage = CIImage(cgImage: chromaMaskCGImage)
+                let chromaRatio = estimateForegroundRatio(maskCGImage: chromaMaskCGImage)
+
+                if let maximumFilter = CIFilter(name: "CIMaximumCompositing") {
+                    do {
+                        let visionMask = try generateVisionMask(cgImage: cgImage)
+                        maximumFilter.setValue(visionMask.maskCIImage, forKey: kCIInputImageKey)
+                        maximumFilter.setValue(chromaMaskCIImage, forKey: kCIInputBackgroundImageKey)
+                        maskCIImage = maximumFilter.outputImage ?? chromaMaskCIImage
+                        foregroundRatio = max(visionMask.foregroundRatio, chromaRatio)
+                    } catch {
+                        fputs("   ⚠️ Vision mask 生成失败，hybrid 模式回退为纯绿幕抠图: \(error)\n", stderr)
+                        maskCIImage = chromaMaskCIImage
+                        foregroundRatio = chromaRatio
+                    }
+                } else {
+                    maskCIImage = chromaMaskCIImage
+                    foregroundRatio = chromaRatio
+                }
             }
 
-            let maskPixelBuffer = try result.generateScaledMaskForImage(forInstances: result.allInstances, from: handler)
-            let foregroundRatio = estimateForegroundRatio(maskPixelBuffer: maskPixelBuffer)
             if options.minForegroundRatio > 0, foregroundRatio < options.minForegroundRatio {
                 fputs("   ⚠️ 前景占比过低(\(String(format: "%.3f", foregroundRatio)))，保留原图: \(inputPath)\n", stderr)
 
@@ -272,35 +460,32 @@ func processSingleImage(
                 return true
             }
 
-            let ciContext = CIContext(options: [.useSoftwareRenderer: false])
-            let originalCIImage = CIImage(cgImage: cgImage)
-            var maskCIImage = CIImage(cvPixelBuffer: maskPixelBuffer)
+            var workingMaskCIImage = maskCIImage
 
             if options.maskDilateRadius > 0,
                let dilateFilter = CIFilter(name: "CIMorphologyMaximum") {
-                dilateFilter.setValue(maskCIImage, forKey: kCIInputImageKey)
+                dilateFilter.setValue(workingMaskCIImage, forKey: kCIInputImageKey)
                 dilateFilter.setValue(options.maskDilateRadius, forKey: kCIInputRadiusKey)
                 if let out = dilateFilter.outputImage {
-                    maskCIImage = out
+                    workingMaskCIImage = out
                 }
             }
 
             if options.maskBlurRadius > 0,
                let blurFilter = CIFilter(name: "CIGaussianBlur") {
-                blurFilter.setValue(maskCIImage, forKey: kCIInputImageKey)
+                blurFilter.setValue(workingMaskCIImage, forKey: kCIInputImageKey)
                 blurFilter.setValue(options.maskBlurRadius, forKey: kCIInputRadiusKey)
                 if let out = blurFilter.outputImage {
-                    maskCIImage = out
+                    workingMaskCIImage = out
                 }
             }
-            
-            let extent = originalCIImage.extent
-            maskCIImage = maskCIImage.cropped(to: extent)
+
+            workingMaskCIImage = workingMaskCIImage.cropped(to: extent)
             let clearImage = CIImage(color: CIColor.clear).cropped(to: extent)
 
             guard let filter = CIFilter(name: "CIBlendWithMask") else { return false }
             filter.setValue(originalCIImage, forKey: kCIInputImageKey)
-            filter.setValue(maskCIImage,      forKey: kCIInputMaskImageKey)
+            filter.setValue(workingMaskCIImage, forKey: kCIInputMaskImageKey)
             filter.setValue(clearImage,       forKey: kCIInputBackgroundImageKey)
 
             guard let outputCIImage = filter.outputImage else { return false }
@@ -341,9 +526,13 @@ guard args.count >= 4 else {
     ╔════════════════════════════════════════════════════════════════════════════╗
     ║   Usage: removebg <type> <input> <output> [--outputFmt png|webp]          ║
     ║                                          [--webpQuality 0-100]             ║
+    ║                                          [--bgMode vision|chromaKey|hybrid]║
     ║                                          [--maskDilate 0-50]               ║
     ║                                          [--maskBlur 0-20]                 ║
     ║                                          [--minForegroundRatio 0-1]        ║
+    ║                                          [--greenThreshold 0-1]            ║
+    ║                                          [--greenSoftness 0-1]             ║
+    ║                                          [--greenMinRatio 0-1]             ║
     ║                                                                            ║
     ║   type=0: 单图模式                                                          ║
     ║     removebg 0 input.jpg output.png                                         ║
@@ -364,9 +553,13 @@ var outputPath = args[3]
 
 var outputFormat: OutputFormat = .png
 var webpQuality = 82
+var backgroundMode: BackgroundMode = .vision
 var maskDilate: Double = 0
 var maskBlur: Double = 0
 var minForegroundRatio: Double = 0
+var greenThreshold: Double = 0.08
+var greenSoftness: Double = 0.18
+var greenMinRatio: Double = 0.38
 
 guard (args.count - 4) % 2 == 0 else {
     fputs("❌ 可选参数必须成对出现，例如 --outputFmt webp --webpQuality 80\n", stderr)
@@ -391,6 +584,12 @@ while optionIndex < args.count {
             exit(1)
         }
         webpQuality = parsedQuality
+    case "--bgMode":
+        guard let parsedMode = BackgroundMode.parse(value) else {
+            fputs("❌ --bgMode 仅支持 vision、chromaKey 或 hybrid\n", stderr)
+            exit(1)
+        }
+        backgroundMode = parsedMode
     case "--maskDilate":
         guard let parsedDilate = Double(value), (0...50).contains(parsedDilate) else {
             fputs("❌ --maskDilate 必须是 0 到 50 之间的数字\n", stderr)
@@ -409,6 +608,24 @@ while optionIndex < args.count {
             exit(1)
         }
         minForegroundRatio = parsedRatio
+    case "--greenThreshold":
+        guard let parsedThreshold = Double(value), (0...1).contains(parsedThreshold) else {
+            fputs("❌ --greenThreshold 必须是 0 到 1 之间的数字\n", stderr)
+            exit(1)
+        }
+        greenThreshold = parsedThreshold
+    case "--greenSoftness":
+        guard let parsedSoftness = Double(value), (0...1).contains(parsedSoftness), parsedSoftness > 0 else {
+            fputs("❌ --greenSoftness 必须是大于 0 且不超过 1 的数字\n", stderr)
+            exit(1)
+        }
+        greenSoftness = parsedSoftness
+    case "--greenMinRatio":
+        guard let parsedGreenRatio = Double(value), (0...1).contains(parsedGreenRatio) else {
+            fputs("❌ --greenMinRatio 必须是 0 到 1 之间的数字\n", stderr)
+            exit(1)
+        }
+        greenMinRatio = parsedGreenRatio
     default:
         fputs("❌ 未知参数: \(option)\n", stderr)
         exit(1)
@@ -424,9 +641,13 @@ guard typeStr == "0" || typeStr == "1" else {
 
 let fileManager = FileManager.default
 let removeBGOptions = RemoveBGOptions(
+    backgroundMode: backgroundMode,
     maskDilateRadius: maskDilate,
     maskBlurRadius: maskBlur,
-    minForegroundRatio: minForegroundRatio
+    minForegroundRatio: minForegroundRatio,
+    chromaKeyThreshold: greenThreshold,
+    chromaKeySoftness: greenSoftness,
+    chromaKeyMinimumGreen: greenMinRatio
 )
 
 // --------------------------------------------------
@@ -441,7 +662,7 @@ if typeStr == "0" {
     
     outputPath = forceOutputExtension(for: outputPath, format: outputFormat)
     
-    print("📸 开始处理单张图片，输出格式: \(outputFormat.displayName)...")
+    print("📸 开始处理单张图片，输出格式: \(outputFormat.displayName)，背景模式: \(backgroundMode.displayName)...")
     if processSingleImage(
         inputPath: inputPath,
         outputPath: outputPath,
@@ -494,7 +715,7 @@ else if typeStr == "1" {
     }
     
     let workerCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
-    print("🚀 发现 \(imageFiles.count) 张图片，开始批量处理，输出格式: \(outputFormat.displayName)，并发线程: \(workerCount)...\n")
+    print("🚀 发现 \(imageFiles.count) 张图片，开始批量处理，输出格式: \(outputFormat.displayName)，背景模式: \(backgroundMode.displayName)，并发线程: \(workerCount)...\n")
     
     var successCount = 0
     var failCount = 0
