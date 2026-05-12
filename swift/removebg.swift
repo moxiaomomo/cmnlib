@@ -1,3 +1,67 @@
+// 自动检测图片边缘主色相（H），返回主色相（0~1）
+func detectDominantEdgeHue(cgImage: CGImage) -> Double? {
+    let width = cgImage.width
+    let height = cgImage.height
+    guard width > 8, height > 8 else { return nil }
+
+    var rgbaPixels = [UInt8](repeating: 0, count: width * height * 4)
+    guard
+        let rgbColorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+        let rgbContext = CGContext(
+            data: &rgbaPixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: rgbColorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+    else {
+        return nil
+    }
+    rgbContext.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+    // 采样边缘像素
+    var hues: [Double] = []
+    let edgeWidth = max(2, min(width, height) / 16)
+    for y in 0..<height {
+        for x in 0..<width {
+            if x < edgeWidth || x >= width - edgeWidth || y < edgeWidth || y >= height - edgeWidth {
+                let idx = (y * width + x) * 4
+                let r = Double(rgbaPixels[idx]) / 255.0
+                let g = Double(rgbaPixels[idx + 1]) / 255.0
+                let b = Double(rgbaPixels[idx + 2]) / 255.0
+                // 转 HSV，取 H
+                let maxV = max(r, g, b)
+                let minV = min(r, g, b)
+                let delta = maxV - minV
+                var h: Double = 0
+                if delta > 1e-5 {
+                    if maxV == g {
+                        h = (b - r) / delta / 6.0 + 1.0/3.0
+                    } else if maxV == b {
+                        h = (r - g) / delta / 6.0 + 2.0/3.0
+                    } else {
+                        h = (g - b) / delta / 6.0
+                    }
+                    if h < 0 { h += 1 }
+                    if h > 1 { h -= 1 }
+                }
+                hues.append(h)
+            }
+        }
+    }
+    guard !hues.isEmpty else { return nil }
+    // 统计主色相
+    let bins = 36
+    var hist = [Int](repeating: 0, count: bins)
+    for h in hues {
+        let idx = Int(h * Double(bins)) % bins
+        hist[idx] += 1
+    }
+    let maxIdx = hist.enumerated().max(by: { $0.element < $1.element })?.offset ?? 0
+    return (Double(maxIdx) + 0.5) / Double(bins)
+}
 import Foundation
 import Vision
 import CoreImage
@@ -19,6 +83,7 @@ enum BackgroundMode {
     case vision
     case chromaKey
     case hybrid
+    case autoChromaKey
 
     var displayName: String {
         switch self {
@@ -28,6 +93,8 @@ enum BackgroundMode {
             return "chromaKey"
         case .hybrid:
             return "hybrid"
+        case .autoChromaKey:
+            return "autoChromaKey"
         }
     }
 
@@ -39,6 +106,8 @@ enum BackgroundMode {
             return .chromaKey
         case "hybrid":
             return .hybrid
+        case "autochromakey", "auto_chromakey", "auto-chromakey":
+            return .autoChromaKey
         default:
             return nil
         }
@@ -441,6 +510,40 @@ func processSingleImage(
                     maskCIImage = chromaMaskCIImage
                     foregroundRatio = chromaRatio
                 }
+            case .autoChromaKey:
+                // 自动检测主色相，推断参数
+                if let hue = detectDominantEdgeHue(cgImage: cgImage) {
+                    // 以绿色为中心（0.33），允许一定偏差
+                    let greenCenter = 0.33
+                    let hueDist = abs(hue - greenCenter)
+                    let threshold = 0.08 + hueDist * 0.5 // 偏离越大阈值越宽松
+                    let softness = 0.18 + hueDist * 0.3
+                    let minGreen = 0.32 - hueDist * 0.2
+                    let autoOptions = RemoveBGOptions(
+                        backgroundMode: .chromaKey,
+                        maskDilateRadius: options.maskDilateRadius,
+                        maskBlurRadius: options.maskBlurRadius,
+                        minForegroundRatio: options.minForegroundRatio,
+                        chromaKeyThreshold: threshold,
+                        chromaKeySoftness: max(0.05, softness),
+                        chromaKeyMinimumGreen: max(0.1, minGreen)
+                    )
+                    guard let chromaMaskCGImage = generateChromaKeyMaskCGImage(cgImage: cgImage, options: autoOptions) else {
+                        fputs("   ❌ autoChromaKey 模式下绿幕 mask 生成失败\n", stderr)
+                        return false
+                    }
+                    maskCIImage = CIImage(cgImage: chromaMaskCGImage)
+                    foregroundRatio = estimateForegroundRatio(maskCGImage: chromaMaskCGImage)
+                    fputs("   ℹ️ 自动检测主色相: \(String(format: "%.2f", hue)), 阈值: \(String(format: "%.2f", threshold)), softness: \(String(format: "%.2f", softness)), minGreen: \(String(format: "%.2f", minGreen))\n", stderr)
+                } else {
+                    fputs("   ❌ autoChromaKey: 主色相检测失败，回退为默认参数\n", stderr)
+                    guard let chromaMaskCGImage = generateChromaKeyMaskCGImage(cgImage: cgImage, options: options) else {
+                        fputs("   ❌ autoChromaKey 回退也失败\n", stderr)
+                        return false
+                    }
+                    maskCIImage = CIImage(cgImage: chromaMaskCGImage)
+                    foregroundRatio = estimateForegroundRatio(maskCGImage: chromaMaskCGImage)
+                }
             }
 
             if options.minForegroundRatio > 0, foregroundRatio < options.minForegroundRatio {
@@ -526,7 +629,7 @@ guard args.count >= 4 else {
     ╔════════════════════════════════════════════════════════════════════════════╗
     ║   Usage: removebg <type> <input> <output> [--outputFmt png|webp]          ║
     ║                                          [--webpQuality 0-100]             ║
-    ║                                          [--bgMode vision|chromaKey|hybrid]║
+    ║                                          [--bgMode vision|chromaKey|hybrid|autoChromaKey]║
     ║                                          [--maskDilate 0-50]               ║
     ║                                          [--maskBlur 0-20]                 ║
     ║                                          [--minForegroundRatio 0-1]        ║
@@ -560,6 +663,7 @@ var minForegroundRatio: Double = 0
 var greenThreshold: Double = 0.08
 var greenSoftness: Double = 0.18
 var greenMinRatio: Double = 0.38
+var autoChromaKeyHue: Double? = nil
 
 guard (args.count - 4) % 2 == 0 else {
     fputs("❌ 可选参数必须成对出现，例如 --outputFmt webp --webpQuality 80\n", stderr)
@@ -586,7 +690,7 @@ while optionIndex < args.count {
         webpQuality = parsedQuality
     case "--bgMode":
         guard let parsedMode = BackgroundMode.parse(value) else {
-            fputs("❌ --bgMode 仅支持 vision、chromaKey 或 hybrid\n", stderr)
+            fputs("❌ --bgMode 仅支持 vision、chromaKey、hybrid、autoChromaKey\n", stderr)
             exit(1)
         }
         backgroundMode = parsedMode
