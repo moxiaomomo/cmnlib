@@ -1,12 +1,17 @@
 #!/bin/bash
 # This script generates the ani2d.h header file from the ani2d.c source file.
 
-show_usage="args: [-i , -o , -f] [--input=, --output=, --frameRate=]"
+show_usage="args: [-i, -o, -f, -m] [--input=, --output=, --frameRate=, --mode=, --help]
+  -i, --input: 输入视频文件路径
+  -o, --output: 输出 ani2d 文件路径
+  -f, --frameRate: 输出动画的帧率，默认为 30
+  -m, --mode: 检测背景的模式 (vision: 视觉模式，chromaKey: 色度键模式，hybrid: 混合模式，autoChromaKey: 自动色度键模式)，默认为 autoChromaKey
+  -h, --help: 显示帮助信息"
 
 inputPath=""
 outputPath=""
 frameRate=30
-
+mode=""
 while [ $# -gt 0 ]
 do
     case "$1" in
@@ -34,6 +39,14 @@ do
         frameRate="${1#*=}"
         shift
         ;;
+      -m|--mode)
+        mode="$2"
+        shift 2
+        ;;
+      -m=*|--mode=*)
+        mode="${1#*=}"
+        shift
+        ;;
       -h|--help)
         echo "$show_usage"
         exit 0
@@ -57,7 +70,7 @@ if [ -z "$inputPath" ] || [ -z "$outputPath" ]; then
 fi
 
 if [ ! -f "$inputPath" ]; then
-    echo "$inputPath 文件不存在"
+    echo "[错误] $inputPath 文件不存在"
     exit 1
 fi
 
@@ -70,8 +83,23 @@ mkdir -p ${tmpPath}/webps
 echo "正在从 $inputPath 提取帧..."
 ffmpeg -i "$inputPath" -vf fps=$frameRate -q:v 2 "${tmpPath}/jpgs/%03d.jpg"
 
+if [ ! -f "${tmpPath}/jpgs/001.jpg" ]; then
+    echo "[错误] ${tmpPath}/jpgs/001.jpg 文件不存在，可能是 ffmpeg 提取帧失败了"
+    exit 1
+fi
+
 echo "正在将帧转换为 WebP 格式...,源中间文件夹：${tmpPath}/jpgs/"
-./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 100
+# --bgMode hybrid --greenThreshold 0.12 --greenSoftness 0.20 --greenMinRatio 0.42
+if [ "$mode" == "autoChromaKey" ]; then
+  ./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 100 --bgMode ${mode:-autoChromaKey}
+else
+  ./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 100 --bgMode ${mode:-hybrid} --greenThreshold 0.12 --greenSoftness 0.20 --greenMinRatio 0.42
+fi
+
+if [ ! -f "${tmpPath}/webps/001.webp" ]; then
+    echo "[错误] ${tmpPath}/webps/001.webp 文件不存在，可能是 removebg 转换失败了"
+    exit 1
+fi
 
 echo "正在生成 ${outputPath}..."
 rm -f "$outputPath"
@@ -84,5 +112,10 @@ python ./ani2d/ani2d_tool.py encode \
   --aniFile "$outputPath" \
   --rawFrameFormat webp \
   --workers 8
+
+if [ ! -f "$outputPath" ]; then
+    echo "[错误] ${outputPath} 文件不存在，可能是 ani2d_tool.py 生成失败了"
+    exit 1
+fi
 
 rm -rf ${tmpPath}/*

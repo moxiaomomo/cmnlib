@@ -1,3 +1,31 @@
+// RGB -> HSV，输出 h/s/v 均为 [0, 1]
+func rgbToHSV(r: Double, g: Double, b: Double) -> (h: Double, s: Double, v: Double) {
+    let maxV = max(r, g, b)
+    let minV = min(r, g, b)
+    let delta = maxV - minV
+    var h: Double = 0.0
+
+    if delta > 1e-6 {
+        if maxV == r {
+            h = ((g - b) / delta).truncatingRemainder(dividingBy: 6.0)
+        } else if maxV == g {
+            h = (b - r) / delta + 2.0
+        } else {
+            h = (r - g) / delta + 4.0
+        }
+        h /= 6.0
+        if h < 0 { h += 1.0 }
+    }
+
+    let s = maxV <= 1e-6 ? 0.0 : delta / maxV
+    return (h, s, maxV)
+}
+
+func hueCircularDistance(_ a: Double, _ b: Double) -> Double {
+    let d = abs(a - b)
+    return min(d, 1.0 - d)
+}
+
 // 自动检测图片边缘主色相（H），返回主色相（0~1）
 func detectDominantEdgeHue(cgImage: CGImage) -> Double? {
     let width = cgImage.width
@@ -21,9 +49,10 @@ func detectDominantEdgeHue(cgImage: CGImage) -> Double? {
     }
     rgbContext.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-    // 采样边缘像素
-    var hues: [Double] = []
+    let bins = 72
+    var hist = [Double](repeating: 0.0, count: bins)
     let edgeWidth = max(2, min(width, height) / 16)
+
     for y in 0..<height {
         for x in 0..<width {
             if x < edgeWidth || x >= width - edgeWidth || y < edgeWidth || y >= height - edgeWidth {
@@ -31,35 +60,24 @@ func detectDominantEdgeHue(cgImage: CGImage) -> Double? {
                 let r = Double(rgbaPixels[idx]) / 255.0
                 let g = Double(rgbaPixels[idx + 1]) / 255.0
                 let b = Double(rgbaPixels[idx + 2]) / 255.0
-                // 转 HSV，取 H
-                let maxV = max(r, g, b)
-                let minV = min(r, g, b)
-                let delta = maxV - minV
-                var h: Double = 0
-                if delta > 1e-5 {
-                    if maxV == g {
-                        h = (b - r) / delta / 6.0 + 1.0/3.0
-                    } else if maxV == b {
-                        h = (r - g) / delta / 6.0 + 2.0/3.0
-                    } else {
-                        h = (g - b) / delta / 6.0
-                    }
-                    if h < 0 { h += 1 }
-                    if h > 1 { h -= 1 }
+                let a = Double(rgbaPixels[idx + 3]) / 255.0
+
+                let hsv = rgbToHSV(r: r, g: g, b: b)
+                // 忽略低饱和/低亮度像素，避免灰边干扰主色相统计
+                if hsv.s < 0.08 || hsv.v < 0.08 || a < 0.1 {
+                    continue
                 }
-                hues.append(h)
+
+                let weight = hsv.s * hsv.v * a
+                let binIndex = Int(hsv.h * Double(bins)) % bins
+                hist[binIndex] += weight
             }
         }
     }
-    guard !hues.isEmpty else { return nil }
-    // 统计主色相
-    let bins = 36
-    var hist = [Int](repeating: 0, count: bins)
-    for h in hues {
-        let idx = Int(h * Double(bins)) % bins
-        hist[idx] += 1
+
+    guard let (maxIdx, maxWeight) = hist.enumerated().max(by: { $0.element < $1.element }), maxWeight > 0 else {
+        return nil
     }
-    let maxIdx = hist.enumerated().max(by: { $0.element < $1.element })?.offset ?? 0
     return (Double(maxIdx) + 0.5) / Double(bins)
 }
 import Foundation
@@ -261,6 +279,77 @@ func generateChromaKeyMaskCGImage(cgImage: CGImage, options: RemoveBGOptions) ->
 
         let foregroundAlpha = clamp01((1.0 - backgroundScore) * a)
         maskPixels[pixelIndex] = UInt8(clamp01(foregroundAlpha) * 255.0)
+    }
+
+    guard
+        let grayColorSpace = CGColorSpace(name: CGColorSpace.genericGrayGamma2_2),
+        let provider = CGDataProvider(data: Data(maskPixels) as CFData)
+    else {
+        return nil
+    }
+
+    return CGImage(
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bitsPerPixel: 8,
+        bytesPerRow: width,
+        space: grayColorSpace,
+        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+        provider: provider,
+        decode: nil,
+        shouldInterpolate: false,
+        intent: .defaultIntent
+    )
+}
+
+func generateAutoHueMaskCGImage(cgImage: CGImage, targetHue: Double, options: RemoveBGOptions) -> CGImage? {
+    let width = cgImage.width
+    let height = cgImage.height
+    guard width > 0, height > 0 else {
+        return nil
+    }
+
+    var rgbaPixels = [UInt8](repeating: 0, count: width * height * 4)
+    guard
+        let rgbColorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+        let rgbContext = CGContext(
+            data: &rgbaPixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: rgbColorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+    else {
+        return nil
+    }
+
+    rgbContext.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+    let threshold = max(0.0, min(options.chromaKeyThreshold, 0.5))
+    let softness = max(0.001, min(options.chromaKeySoftness, 0.5))
+    let minSaturation = max(0.0, min(options.chromaKeyMinimumGreen, 1.0))
+
+    var maskPixels = [UInt8](repeating: 0, count: width * height)
+    for pixelIndex in 0..<(width * height) {
+        let rgbaIndex = pixelIndex * 4
+        let r = Double(rgbaPixels[rgbaIndex]) / 255.0
+        let g = Double(rgbaPixels[rgbaIndex + 1]) / 255.0
+        let b = Double(rgbaPixels[rgbaIndex + 2]) / 255.0
+        let a = Double(rgbaPixels[rgbaIndex + 3]) / 255.0
+
+        let hsv = rgbToHSV(r: r, g: g, b: b)
+        let dist = hueCircularDistance(hsv.h, targetHue)
+        let hueMatch = 1.0 - clamp01((dist - threshold) / softness)
+        let satGate = clamp01((hsv.s - minSaturation) / max(0.001, 1.0 - minSaturation))
+        let valueGate = clamp01((hsv.v - 0.05) / 0.95)
+
+        // 距离目标色相越近、饱和度越高，越倾向判定为背景
+        let backgroundScore = clamp01(hueMatch * satGate * valueGate)
+        let foregroundAlpha = clamp01((1.0 - backgroundScore) * a)
+        maskPixels[pixelIndex] = UInt8(foregroundAlpha * 255.0)
     }
 
     guard
@@ -511,32 +600,30 @@ func processSingleImage(
                     foregroundRatio = chromaRatio
                 }
             case .autoChromaKey:
-                // 自动检测主色相，推断参数
+                // 自动检测背景主色相，并按色相环距离生成 mask
                 if let hue = detectDominantEdgeHue(cgImage: cgImage) {
-                    // 以绿色为中心（0.33），允许一定偏差
-                    let greenCenter = 0.33
-                    let hueDist = abs(hue - greenCenter)
-                    let threshold = 0.08 + hueDist * 0.5 // 偏离越大阈值越宽松
-                    let softness = 0.18 + hueDist * 0.3
-                    let minGreen = 0.32 - hueDist * 0.2
+                    // 基于已有参数作为“调节旋钮”来控制色相距离阈值/过渡和最低饱和度
+                    let threshold = max(0.02, min(options.chromaKeyThreshold, 0.25))
+                    let softness = max(0.03, min(options.chromaKeySoftness, 0.30))
+                    let minSaturation = max(0.05, min(options.chromaKeyMinimumGreen, 0.85))
                     let autoOptions = RemoveBGOptions(
-                        backgroundMode: .chromaKey,
+                        backgroundMode: .autoChromaKey,
                         maskDilateRadius: options.maskDilateRadius,
                         maskBlurRadius: options.maskBlurRadius,
                         minForegroundRatio: options.minForegroundRatio,
                         chromaKeyThreshold: threshold,
                         chromaKeySoftness: max(0.05, softness),
-                        chromaKeyMinimumGreen: max(0.1, minGreen)
+                        chromaKeyMinimumGreen: minSaturation
                     )
-                    guard let chromaMaskCGImage = generateChromaKeyMaskCGImage(cgImage: cgImage, options: autoOptions) else {
-                        fputs("   ❌ autoChromaKey 模式下绿幕 mask 生成失败\n", stderr)
+                    guard let chromaMaskCGImage = generateAutoHueMaskCGImage(cgImage: cgImage, targetHue: hue, options: autoOptions) else {
+                        fputs("   ❌ autoChromaKey 模式下自动色相 mask 生成失败\n", stderr)
                         return false
                     }
                     maskCIImage = CIImage(cgImage: chromaMaskCGImage)
                     foregroundRatio = estimateForegroundRatio(maskCGImage: chromaMaskCGImage)
-                    fputs("   ℹ️ 自动检测主色相: \(String(format: "%.2f", hue)), 阈值: \(String(format: "%.2f", threshold)), softness: \(String(format: "%.2f", softness)), minGreen: \(String(format: "%.2f", minGreen))\n", stderr)
+                    fputs("   ℹ️ 自动检测主色相: \(String(format: "%.3f", hue)), hueThreshold: \(String(format: "%.3f", threshold)), hueSoftness: \(String(format: "%.3f", softness)), minSaturation: \(String(format: "%.3f", minSaturation))\n", stderr)
                 } else {
-                    fputs("   ❌ autoChromaKey: 主色相检测失败，回退为默认参数\n", stderr)
+                    fputs("   ❌ autoChromaKey: 主色相检测失败，回退为绿色 chromaKey 参数\n", stderr)
                     guard let chromaMaskCGImage = generateChromaKeyMaskCGImage(cgImage: cgImage, options: options) else {
                         fputs("   ❌ autoChromaKey 回退也失败\n", stderr)
                         return false
@@ -654,7 +741,7 @@ let typeStr    = args[1]
 let inputPath  = args[2]
 var outputPath = args[3]
 
-var outputFormat: OutputFormat = .png
+var outputFormat: OutputFormat = .webp
 var webpQuality = 82
 var backgroundMode: BackgroundMode = .vision
 var maskDilate: Double = 0
@@ -663,8 +750,6 @@ var minForegroundRatio: Double = 0
 var greenThreshold: Double = 0.08
 var greenSoftness: Double = 0.18
 var greenMinRatio: Double = 0.38
-var autoChromaKeyHue: Double? = nil
-
 guard (args.count - 4) % 2 == 0 else {
     fputs("❌ 可选参数必须成对出现，例如 --outputFmt webp --webpQuality 80\n", stderr)
     exit(1)
