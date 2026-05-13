@@ -21,6 +21,7 @@ python/media/assets/
 */input/
 */output/
 */tmp/
+.tmp*
 
 swift/pigJpg/
 swift/pigJpg_rmbg/

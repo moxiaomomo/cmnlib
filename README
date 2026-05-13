@@ -9,6 +9,10 @@ REMOVEBG_PNGQUANT=1 ./removebg 1 ./input/pigRelax/ ./output/pigRelax/ --outputFm
 
 # hybrid模式，当前只对绿幕背景图去除背景的效果比较好，一般情况下比vision好；如果非绿幕背景，还是优先使用vision模式
 hybrid 绿幕 mask 和 Vision mask 做合并，优先保住非绿色前景区域；如果 Vision 失败，会自动回退成纯绿幕模式。
+
+# 新增去水印参数
+# --watermarkRemoval on|off
+# --watermarkRepairRadius 0-30
 ```
 
 ## 解决通过ffmpeg将webp序列合并为mp4视频时出现明显锯齿的问题

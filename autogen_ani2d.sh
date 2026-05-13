@@ -91,9 +91,9 @@ fi
 echo "正在将帧转换为 WebP 格式...,源中间文件夹：${tmpPath}/jpgs/"
 # --bgMode hybrid --greenThreshold 0.12 --greenSoftness 0.20 --greenMinRatio 0.42
 if [ "$mode" == "autoChromaKey" ]; then
-  ./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 100 --bgMode ${mode:-autoChromaKey}
+  ./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 100 --bgMode ${mode:-autoChromaKey} --watermarkRemoval on
 else
-  ./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 100 --bgMode ${mode:-hybrid} --greenThreshold 0.12 --greenSoftness 0.20 --greenMinRatio 0.42
+  ./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 100 --bgMode ${mode:-hybrid} --greenThreshold 0.12 --greenSoftness 0.20 --greenMinRatio 0.42 --watermarkRemoval on
 fi
 
 if [ ! -f "${tmpPath}/webps/001.webp" ]; then
@@ -118,4 +118,4 @@ if [ ! -f "$outputPath" ]; then
     exit 1
 fi
 
-rm -rf ${tmpPath}/*
+#rm -rf ${tmpPath}/*
