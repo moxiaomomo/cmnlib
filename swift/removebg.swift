@@ -783,6 +783,46 @@ func tryOptimizePNGWithPngquant(filePath: String) {
     }
 }
 
+func applyTransparentBorder(cgImage: CGImage, borderWidth: Int) -> CGImage? {
+    let width = cgImage.width
+    let height = cgImage.height
+    guard width > 0, height > 0 else {
+        return cgImage
+    }
+
+    let clampedBorder = max(0, min(borderWidth, min(width, height) / 2))
+    guard clampedBorder > 0 else {
+        return cgImage
+    }
+
+    guard
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+        let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+    else {
+        return nil
+    }
+
+    let fullRect = CGRect(x: 0, y: 0, width: width, height: height)
+    context.draw(cgImage, in: fullRect)
+
+    context.setBlendMode(.copy)
+    context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0))
+    context.fill(CGRect(x: 0, y: 0, width: width, height: clampedBorder))
+    context.fill(CGRect(x: 0, y: height - clampedBorder, width: width, height: clampedBorder))
+    context.fill(CGRect(x: 0, y: 0, width: clampedBorder, height: height))
+    context.fill(CGRect(x: width - clampedBorder, y: 0, width: clampedBorder, height: height))
+
+    return context.makeImage()
+}
+
 // MARK: - 核心逻辑：处理单张图片
 func processSingleImage(
     inputPath: String,
@@ -902,7 +942,9 @@ func processSingleImage(
                     try? FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
                 }
 
-                guard writeImage(cgImage: preprocessedCGImage, outputPath: outputPath, format: outputFormat, webpQuality: webpQuality) else {
+                let outputImageWithBorder = applyTransparentBorder(cgImage: preprocessedCGImage, borderWidth: 15) ?? preprocessedCGImage
+
+                guard writeImage(cgImage: outputImageWithBorder, outputPath: outputPath, format: outputFormat, webpQuality: webpQuality) else {
                     return false
                 }
                 if outputFormat == .png {
@@ -951,7 +993,9 @@ func processSingleImage(
                 try? FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
             }
 
-            guard writeImage(cgImage: outputCGImage, outputPath: outputPath, format: outputFormat, webpQuality: webpQuality) else {
+            let outputImageWithBorder = applyTransparentBorder(cgImage: outputCGImage, borderWidth: 15) ?? outputCGImage
+
+            guard writeImage(cgImage: outputImageWithBorder, outputPath: outputPath, format: outputFormat, webpQuality: webpQuality) else {
                 return false
             }
             if outputFormat == .png {
