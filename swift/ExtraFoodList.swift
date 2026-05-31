@@ -3,12 +3,13 @@ import AppKit
 import Vision
 
 struct DetectedObject: Codable {
-	let objectId: String
-	let x: Int
-	let y: Int
-	let width: Int
-	let height: Int
-	let confidence: Double?
+    var objectId: String
+    var objectName: String
+    var x: Int
+    var y: Int
+    var width: Int
+    var height: Int
+    var confidence: Double = 1.0
 }
 
 struct DetectionOutput: Codable {
@@ -32,18 +33,20 @@ enum DetectionError: Error, LocalizedError {
 	}
 }
 
-func resolveImagePath() -> URL {
-	let fileManager = FileManager.default
-	let candidates = [
-		"./input/food1.png",
-		"./swift/input/food1.png"
-	]
-	for item in candidates {
-		if fileManager.fileExists(atPath: item) {
-			return URL(fileURLWithPath: item)
-		}
+func parseInputImageURL() throws -> URL {
+	let args = Array(CommandLine.arguments.dropFirst())
+	guard let first = args.first, !first.isEmpty else {
+		throw DetectionError.imageNotFound("Missing input image path. Usage: swift ExtraFoodList.swift <image_path>")
 	}
-	return URL(fileURLWithPath: candidates[0])
+	return URL(fileURLWithPath: first)
+}
+
+func buildOutputPaths(for imageURL: URL) -> (jsonPath: String, annotatedPath: String) {
+	let baseName = imageURL.deletingPathExtension().lastPathComponent
+	let outputDir = "./swift/output"
+	let jsonPath = "\(outputDir)/\(baseName)_objects_from_swift.json"
+	let annotatedPath = "\(outputDir)/\(baseName)_objects_annotated_by_swift.png"
+	return (jsonPath, annotatedPath)
 }
 
 func loadCGImage(from url: URL) throws -> CGImage {
@@ -123,6 +126,126 @@ func hasMeaningfulTransparentBackground(cgImage: CGImage, alphaThreshold: UInt8 
 	return transparentRatio >= 0.1
 }
 
+func normalizeRowAlignment(objects: [DetectedObject], rowThresholdRatio: Double = 0.4) -> [DetectedObject] {
+	guard !objects.isEmpty else {
+		return objects
+	}
+
+	let avgHeight = Double(objects.reduce(0) { $0 + $1.height }) / Double(objects.count)
+	let rowThreshold = max(1.0, avgHeight * rowThresholdRatio)
+
+	let sortedByY = objects.sorted { lhs, rhs in
+		if lhs.y == rhs.y {
+			return lhs.x < rhs.x
+		}
+		return lhs.y < rhs.y
+	}
+
+	var normalized = sortedByY
+	var rowStart = 0
+
+	while rowStart < normalized.count {
+		let baseY = normalized[rowStart].y
+		var rowEnd = rowStart
+
+		while rowEnd + 1 < normalized.count {
+			let nextY = normalized[rowEnd + 1].y
+			if Double(nextY - baseY) < rowThreshold {
+				rowEnd += 1
+			} else {
+				break
+			}
+		}
+
+		let rowMinY = normalized[rowStart...rowEnd].map { $0.y }.min() ?? normalized[rowStart].y
+		let rowMaxHeight = normalized[rowStart...rowEnd].map { $0.height }.max() ?? normalized[rowStart].height
+
+		for idx in rowStart...rowEnd {
+			normalized[idx].y = rowMinY
+			normalized[idx].height = rowMaxHeight
+		}
+
+		rowStart = rowEnd + 1
+	}
+
+	return normalized
+}
+
+func mergeObjectsInSameRow(objects: [DetectedObject], closeGapRatio: Double = 0.08) -> [DetectedObject] {
+	guard !objects.isEmpty else {
+		return objects
+	}
+
+	let avgWidth = Double(objects.reduce(0) { $0 + $1.width }) / Double(objects.count)
+	let closeGapThreshold = max(1, Int(round(avgWidth * closeGapRatio)))
+
+	let grouped = Dictionary(grouping: objects) { $0.y }
+	let sortedRowKeys = grouped.keys.sorted()
+	var mergedAllRows: [DetectedObject] = []
+
+	for rowY in sortedRowKeys {
+		guard var rowObjects = grouped[rowY] else {
+			continue
+		}
+		rowObjects.sort { $0.x < $1.x }
+
+		var mergedRow: [DetectedObject] = []
+		var index = 0
+
+		while index < rowObjects.count {
+			var current = rowObjects[index]
+			var nextIndex = index + 1
+
+			while nextIndex < rowObjects.count {
+				let next = rowObjects[nextIndex]
+
+				let x1 = current.x
+				let width1 = current.width
+				let right1 = x1 + width1
+
+				let x2 = next.x
+				let width2 = next.width
+				let right2 = x2 + width2
+
+				let isNear = (x1 <= x2) && (right1 <= x2) && ((x2 - right1) <= closeGapThreshold)
+				let isOverlap = (x1 <= x2) && (right1 > x2) && (right1 < right2)
+				let isContain = (x1 <= x2) && (right1 >= right2)
+
+				guard isNear || isOverlap || isContain else {
+					break
+				}
+
+				if isNear {
+					// (1) 挨着: x = x1, width = x2 - x1 + width2
+					current.x = x1
+					current.width = x2 - x1 + width2
+				} else if isOverlap {
+					// (2) 重叠: x = x1, width = x2 - x1 + width2
+					current.x = x1
+					current.width = x2 - x1 + width2
+				} else {
+					// (3) 包含: x = x1, width = width1
+					current.x = x1
+					current.width = width1
+				}
+
+				current.y = min(current.y, next.y)
+				current.height = max(current.height, next.height)
+				current.confidence = max(current.confidence, next.confidence)
+
+				nextIndex += 1
+			}
+
+			mergedRow.append(current)
+			index = nextIndex
+		}
+
+		mergedAllRows.append(contentsOf: mergedRow)
+	}
+
+	return mergedAllRows
+}
+
 func detectByAlphaConnectedComponents(cgImage: CGImage, alphaThreshold: UInt8 = 8, minAreaRatio: Double = 0.0002) -> [DetectedObject] {
 	guard let rgba = makeRGBA8Buffer(cgImage: cgImage) else {
 		return []
@@ -146,6 +269,7 @@ func detectByAlphaConnectedComponents(cgImage: CGImage, alphaThreshold: UInt8 = 
 	let dx = [1, -1, 0, 0]
 	let dy = [0, 0, 1, -1]
 
+	// 坐标系原点在左上角，x向右递增，y向下递增
 	for y in 0..<height {
 		for x in 0..<width {
 			let start = y * width + x
@@ -198,11 +322,12 @@ func detectByAlphaConnectedComponents(cgImage: CGImage, alphaThreshold: UInt8 = 
 			objects.append(
 				DetectedObject(
 					objectId: "obj_tmp",
+					objectName: "obj_tmp",
 					x: minX,
 					y: minY,
 					width: maxX - minX + 1,
 					height: maxY - minY + 1,
-					confidence: nil
+					confidence: 1.0
 				)
 			)
 		}
@@ -222,6 +347,7 @@ func sortAndRenumber(_ objects: [DetectedObject]) -> [DetectedObject] {
 	return sorted.enumerated().map { idx, object in
 		DetectedObject(
 			objectId: "obj_\(idx + 1)",
+			objectName: "obj_\(idx + 1)",
 			x: object.x,
 			y: object.y,
 			width: object.width,
@@ -261,11 +387,12 @@ func detectBySaliency(cgImage: CGImage) -> [DetectedObject] {
 		objects.append(
 			DetectedObject(
 				objectId: "obj_\(idx + 1)",
+				objectName: "obj_\(idx + 1)",
 				x: pixelRect.x,
 				y: pixelRect.y,
 				width: pixelRect.w,
 				height: pixelRect.h,
-				confidence: nil
+				confidence: 1.0
 			)
 		)
 	}
@@ -299,11 +426,12 @@ func detectByRectangles(cgImage: CGImage) -> [DetectedObject] {
 		objects.append(
 			DetectedObject(
 				objectId: "obj_\(idx + 1)",
+				objectName: "obj_\(idx + 1)",
 				x: pixelRect.x,
 				y: pixelRect.y,
 				width: pixelRect.w,
 				height: pixelRect.h,
-				confidence: obs.confidence.isFinite ? Double(obs.confidence) : nil
+				confidence: obs.confidence.isFinite ? Double(obs.confidence) : 1.0
 			)
 		)
 	}
@@ -311,8 +439,7 @@ func detectByRectangles(cgImage: CGImage) -> [DetectedObject] {
 	return objects
 }
 
-func detectObjectsInFoodImage() throws -> DetectionOutput {
-	let imageURL = resolveImagePath()
+func detectObjectsInFoodImage(imageURL: URL) throws -> DetectionOutput {
 	let cgImage = try loadCGImage(from: imageURL)
 
 	var detector = "alpha_connected_components"
@@ -332,6 +459,8 @@ func detectObjectsInFoodImage() throws -> DetectionOutput {
 		objects = detectByRectangles(cgImage: cgImage)
 	}
 
+	objects = normalizeRowAlignment(objects: objects)
+	objects = mergeObjectsInSameRow(objects: objects, closeGapRatio: 0.02)
 	objects = sortAndRenumber(objects)
 
 	return DetectionOutput(
@@ -387,9 +516,24 @@ func saveAnnotatedImage(cgImage: CGImage, objects: [DetectedObject], outputPath:
 	try? pngData.write(to: outputURL)
 }
 
+func printFoodCatesWithName(foodCateIconObjects: [DetectedObject]) {
+	let foodCateEnNames: [String] = [
+		"milk","beverages","alcoholic beverages","nuts","infant food",
+		"cookie","dried beans","fruits","fats and oils","livestock meat",
+		"poultry meat","sugar","fungi and algae","vegetables","tubers",
+		"egg products","condiments","grain","fast food","seafood"
+	]
+	for idx in 0..<foodCateIconObjects.count {
+		print("DetectedObject(objectId: \"\(foodCateEnNames[idx])\", objectName: \"\(foodCateEnNames[idx])\", x: \(foodCateIconObjects[idx].x), y: \(foodCateIconObjects[idx].y), width: \(foodCateIconObjects[idx].width), height: \(foodCateIconObjects[idx].height)),")
+	}
+}
+
 func main() {
 	do {
-		let output = try detectObjectsInFoodImage()
+		let imageURL = try parseInputImageURL()
+		let output = try detectObjectsInFoodImage(imageURL: imageURL)
+		let outputPaths = buildOutputPaths(for: imageURL)
+
 		let encoder = JSONEncoder()
 		encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 
@@ -398,16 +542,16 @@ func main() {
 			print(text)
 		}
 
-		let outputPath = "./swift/output/food1_objects_from_swift.json"
 		try FileManager.default.createDirectory(atPath: "./swift/output", withIntermediateDirectories: true)
-		try jsonData.write(to: URL(fileURLWithPath: outputPath))
+		try jsonData.write(to: URL(fileURLWithPath: outputPaths.jsonPath))
 
-		let imageURL = resolveImagePath()
 		let cgImage = try loadCGImage(from: imageURL)
-		saveAnnotatedImage(cgImage: cgImage, objects: output.objects, outputPath: "./swift/output/food1_objects_annotated_by_swift.png")
+		saveAnnotatedImage(cgImage: cgImage, objects: output.objects, outputPath: outputPaths.annotatedPath)
 
-		print("Saved JSON: \(outputPath)")
-		print("Saved annotated image: ./swift/output/food1_objects_annotated_by_swift.png")
+		// print("Saved JSON: \(outputPaths.jsonPath)")
+		print("Saved annotated image: \(outputPaths.annotatedPath)")
+
+		// printFoodCatesWithName(foodCateIconObjects: output.objects)
 	} catch {
 		fputs("Error: \(error.localizedDescription)\n", stderr)
 		exit(1)

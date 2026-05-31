@@ -18,7 +18,7 @@ local.properties
 python/math/media/
 python/media/assets/
 
-*/input/
+*/input/pig*
 */output/
 */tmp/
 .tmp*

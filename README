@@ -48,11 +48,17 @@ python ani2d_tool.py encode \
   --workers 8
 ```
 
-## 集成脚本说明
+## 生成a2d文件的集成脚本说明
 
 ```shell
 $ bash autogen_ani2d.sh --help
 args: [-i , -o , -f] [--input=, --output=, --frameRate=]
 # 使用示例
 $ bash autogen_ani2d.sh -i=../../Downloads/pigCurious.mp4 -o=./ani2d/output/pigCurious.a2d -f=20
+```
+
+## 识别图中物体(不识别具体物体名，只识别物体位置坐标信息)
+
+```shell
+swift ExtraFoodList.swift ./input/food1.png
 ```

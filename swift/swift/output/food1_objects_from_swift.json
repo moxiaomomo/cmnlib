@@ -4,179 +4,229 @@
   "imagePath" : "\/Users\/moguang\/Projects\/cmnlib\/swift\/input\/food1.png",
   "objects" : [
     {
+      "confidence" : 1,
       "height" : 308,
       "objectId" : "obj_1",
+      "objectName" : "obj_1",
       "width" : 277,
       "x" : 324,
       "y" : 134
     },
     {
-      "height" : 288,
+      "confidence" : 1,
+      "height" : 308,
       "objectId" : "obj_2",
+      "objectName" : "obj_2",
       "width" : 369,
       "x" : 677,
-      "y" : 153
+      "y" : 134
     },
     {
-      "height" : 264,
+      "confidence" : 1,
+      "height" : 308,
       "objectId" : "obj_3",
+      "objectName" : "obj_3",
       "width" : 257,
       "x" : 1074,
-      "y" : 177
+      "y" : 134
     },
     {
-      "height" : 243,
+      "confidence" : 1,
+      "height" : 308,
       "objectId" : "obj_4",
+      "objectName" : "obj_4",
       "width" : 281,
       "x" : 1413,
-      "y" : 201
+      "y" : 134
     },
     {
+      "confidence" : 1,
       "height" : 295,
       "objectId" : "obj_5",
+      "objectName" : "obj_5",
+      "width" : 243,
+      "x" : 337,
+      "y" : 455
+    },
+    {
+      "confidence" : 1,
+      "height" : 295,
+      "objectId" : "obj_6",
+      "objectName" : "obj_6",
+      "width" : 177,
+      "x" : 627,
+      "y" : 455
+    },
+    {
+      "confidence" : 1,
+      "height" : 295,
+      "objectId" : "obj_7",
+      "objectName" : "obj_7",
+      "width" : 174,
+      "x" : 853,
+      "y" : 455
+    },
+    {
+      "confidence" : 1,
+      "height" : 295,
+      "objectId" : "obj_8",
+      "objectName" : "obj_8",
+      "width" : 221,
+      "x" : 1068,
+      "y" : 455
+    },
+    {
+      "confidence" : 1,
+      "height" : 295,
+      "objectId" : "obj_9",
+      "objectName" : "obj_9",
+      "width" : 173,
+      "x" : 1317,
+      "y" : 455
+    },
+    {
+      "confidence" : 1,
+      "height" : 295,
+      "objectId" : "obj_10",
+      "objectName" : "obj_10",
       "width" : 191,
       "x" : 1519,
       "y" : 455
     },
     {
-      "height" : 268,
-      "objectId" : "obj_6",
-      "width" : 243,
-      "x" : 337,
-      "y" : 468
-    },
-    {
-      "height" : 253,
-      "objectId" : "obj_7",
-      "width" : 173,
-      "x" : 1317,
-      "y" : 478
-    },
-    {
-      "height" : 211,
-      "objectId" : "obj_8",
-      "width" : 221,
-      "x" : 1068,
-      "y" : 494
-    },
-    {
-      "height" : 207,
-      "objectId" : "obj_9",
-      "width" : 177,
-      "x" : 627,
-      "y" : 509
-    },
-    {
-      "height" : 176,
-      "objectId" : "obj_10",
-      "width" : 174,
-      "x" : 853,
-      "y" : 540
-    },
-    {
+      "confidence" : 1,
       "height" : 241,
       "objectId" : "obj_11",
+      "objectName" : "obj_11",
+      "width" : 222,
+      "x" : 340,
+      "y" : 770
+    },
+    {
+      "confidence" : 1,
+      "height" : 241,
+      "objectId" : "obj_12",
+      "objectName" : "obj_12",
+      "width" : 222,
+      "x" : 626,
+      "y" : 770
+    },
+    {
+      "confidence" : 1,
+      "height" : 241,
+      "objectId" : "obj_13",
+      "objectName" : "obj_13",
+      "width" : 228,
+      "x" : 902,
+      "y" : 770
+    },
+    {
+      "confidence" : 1,
+      "height" : 241,
+      "objectId" : "obj_14",
+      "objectName" : "obj_14",
       "width" : 190,
       "x" : 1218,
       "y" : 770
     },
     {
-      "height" : 225,
-      "objectId" : "obj_12",
-      "width" : 222,
-      "x" : 340,
-      "y" : 771
-    },
-    {
-      "height" : 224,
-      "objectId" : "obj_13",
-      "width" : 228,
-      "x" : 902,
-      "y" : 773
-    },
-    {
-      "height" : 219,
-      "objectId" : "obj_14",
+      "confidence" : 1,
+      "height" : 241,
+      "objectId" : "obj_15",
+      "objectName" : "obj_15",
       "width" : 212,
       "x" : 1480,
-      "y" : 779
+      "y" : 770
     },
     {
-      "height" : 176,
-      "objectId" : "obj_15",
-      "width" : 222,
-      "x" : 626,
-      "y" : 807
-    },
-    {
+      "confidence" : 1,
       "height" : 217,
       "objectId" : "obj_16",
+      "objectName" : "obj_16",
+      "width" : 243,
+      "x" : 329,
+      "y" : 1063
+    },
+    {
+      "confidence" : 1,
+      "height" : 217,
+      "objectId" : "obj_17",
+      "objectName" : "obj_17",
+      "width" : 234,
+      "x" : 630,
+      "y" : 1063
+    },
+    {
+      "confidence" : 1,
+      "height" : 217,
+      "objectId" : "obj_18",
+      "objectName" : "obj_18",
+      "width" : 173,
+      "x" : 930,
+      "y" : 1063
+    },
+    {
+      "confidence" : 1,
+      "height" : 217,
+      "objectId" : "obj_19",
+      "objectName" : "obj_19",
       "width" : 204,
       "x" : 1200,
       "y" : 1063
     },
     {
-      "height" : 205,
-      "objectId" : "obj_17",
-      "width" : 173,
-      "x" : 930,
-      "y" : 1065
-    },
-    {
-      "height" : 204,
-      "objectId" : "obj_18",
+      "confidence" : 1,
+      "height" : 217,
+      "objectId" : "obj_20",
+      "objectName" : "obj_20",
       "width" : 212,
       "x" : 1476,
-      "y" : 1070
+      "y" : 1063
     },
     {
-      "height" : 200,
-      "objectId" : "obj_19",
-      "width" : 234,
-      "x" : 630,
-      "y" : 1073
-    },
-    {
-      "height" : 184,
-      "objectId" : "obj_20",
-      "width" : 243,
-      "x" : 329,
-      "y" : 1076
-    },
-    {
+      "confidence" : 1,
       "height" : 249,
       "objectId" : "obj_21",
-      "width" : 138,
-      "x" : 1528,
+      "objectName" : "obj_21",
+      "width" : 170,
+      "x" : 363,
       "y" : 1325
     },
     {
-      "height" : 235,
+      "confidence" : 1,
+      "height" : 249,
       "objectId" : "obj_22",
-      "width" : 170,
-      "x" : 363,
-      "y" : 1333
-    },
-    {
-      "height" : 236,
-      "objectId" : "obj_23",
+      "objectName" : "obj_22",
       "width" : 164,
       "x" : 648,
-      "y" : 1333
+      "y" : 1325
     },
     {
-      "height" : 239,
-      "objectId" : "obj_24",
-      "width" : 138,
-      "x" : 1241,
-      "y" : 1333
-    },
-    {
-      "height" : 224,
-      "objectId" : "obj_25",
+      "confidence" : 1,
+      "height" : 249,
+      "objectId" : "obj_23",
+      "objectName" : "obj_23",
       "width" : 232,
       "x" : 906,
-      "y" : 1341
+      "y" : 1325
+    },
+    {
+      "confidence" : 1,
+      "height" : 249,
+      "objectId" : "obj_24",
+      "objectName" : "obj_24",
+      "width" : 138,
+      "x" : 1241,
+      "y" : 1325
+    },
+    {
+      "confidence" : 1,
+      "height" : 249,
+      "objectId" : "obj_25",
+      "objectName" : "obj_25",
+      "width" : 138,
+      "x" : 1528,
+      "y" : 1325
     }
   ]
 }
