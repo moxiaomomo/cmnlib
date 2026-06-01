@@ -528,6 +528,19 @@ func printFoodCatesWithName(foodCateIconObjects: [DetectedObject]) {
 	}
 }
 
+func printFactsWithName(factObjects: [DetectedObject]) {
+	let factEnNames: [String] = [
+		"energy","protein","FAT","CHO","vitaminA",
+		"vitaminC","vitaminE","thiamin","riboflavin","niacin",
+		"calcium","iron","zinc","phosphorus","potassium",
+		"sodium","magnesium","selenium","copper","manganese",
+		"iodine","sfa","usfa","mufa","pufa"
+	]
+	for idx in 0..<factObjects.count {
+		print("DetectedObject(objectId: \"\(factEnNames[idx])\", objectName: \"\(factEnNames[idx])\", x: \(factObjects[idx].x), y: \(factObjects[idx].y), width: \(factObjects[idx].width), height: \(factObjects[idx].height)),")
+	}
+}
+
 func main() {
 	do {
 		let imageURL = try parseInputImageURL()
@@ -552,6 +565,7 @@ func main() {
 		print("Saved annotated image: \(outputPaths.annotatedPath)")
 
 		// printFoodCatesWithName(foodCateIconObjects: output.objects)
+		// ctsWithName(factObjects: output.objects)
 	} catch {
 		fputs("Error: \(error.localizedDescription)\n", stderr)
 		exit(1)

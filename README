@@ -72,3 +72,12 @@ $ bash autogen_ani2d.sh -f=15 -m=vision -i=./ani2d/source/afterEat.mp4 -o=./ani2
 ```shell
 swift ExtraFoodList.swift ./input/food1.png
 ```
+
+## ffmpeg识别固定颜色背景，并保存为rgba通道的png文件:
+```shell
+# ffmpeg效果不是很好，可以用windows的"智能抠图"代替
+ffmpeg -i input.jpg -vf "colorkey=0x000000:0.01:0.1,format=rgba" output.png
+# 缩放和裁剪
+ffmpeg -i output.png -vf crop=1600:1600:224:224 output1.png
+ffmpeg -i output1.png -vf crop=800:800:250:250 output2.png
+```

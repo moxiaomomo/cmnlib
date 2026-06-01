@@ -19,7 +19,7 @@ python/math/media/
 python/media/assets/
 
 */input/pig*
-*/output/
+**/output/
 */tmp/
 .tmp*
 
