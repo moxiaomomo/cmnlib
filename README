@@ -56,12 +56,14 @@ args: [-i , -o , -f] [--input=, --output=, --frameRate=]
 # 使用示例
 $ bash autogen_ani2d.sh -f=15 -m=hybrid -i=./ani2d/source/pigCurious.mp4 -o=./ani2d/output/pigCurious.a2d
 $ bash autogen_ani2d.sh -f=15 -m=hybrid -i=./ani2d/source/pigLooking.mp4 -o=./ani2d/output/pigLooking.a2d
-$ bash autogen_ani2d.sh -f=15 -m=hybrid -i=./ani2d/source/pigReading.mp4 -o=./ani2d/output/pigReading.a2d
+$ bash autogen_ani2d.sh -f=15 -m=vision -i=./ani2d/source/pigReading.mp4 -o=./ani2d/output/pigReading.a2d
 $ bash autogen_ani2d.sh -f=15 -m=vision -i=./ani2d/source/pigTalking.mp4 -o=./ani2d/output/pigTalking.a2d
 $ bash autogen_ani2d.sh -f=15 -m=vision -i=./ani2d/source/pigTeaching.mp4 -o=./ani2d/output/pigTeaching.a2d
 $ bash autogen_ani2d.sh -f=15 -m=vision -i=./ani2d/source/pigWalking.mp4 -o=./ani2d/output/pigWalking.a2d
 $ bash autogen_ani2d.sh -f=15 -m=vision -i=./ani2d/source/pigWorking.mp4 -o=./ani2d/output/pigWorking.a2d
 $ bash autogen_ani2d.sh -f=15 -m=vision -i=./ani2d/source/eatNoodles.mp4 -o=./ani2d/output/eatNoodles.a2d
+$ bash autogen_ani2d.sh -f=15 -m=vision -i=./ani2d/source/eatFinish.mp4 -o=./ani2d/output/eatFinish.a2d
+$ bash autogen_ani2d.sh -f=15 -m=vision -i=./ani2d/source/afterEat.mp4 -o=./ani2d/output/afterEat.a2d
 ```
 
 ## 识别图中物体(不识别具体物体名，只识别物体位置坐标信息)
