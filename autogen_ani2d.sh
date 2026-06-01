@@ -91,9 +91,9 @@ fi
 videoWidth=${videoSize%x*}
 videoHeight=${videoSize#*x}
 
-if [ "$videoWidth" -gt 960 ] || [ "$videoHeight" -gt 960 ]; then
-  vfExpr="fps=$frameRate,scale=960:960:force_original_aspect_ratio=decrease"
-  echo "检测到原始分辨率 ${videoWidth}x${videoHeight}，将按比例缩放至最长边 960 后抽帧"
+if [ "$videoWidth" -gt 768 ] || [ "$videoHeight" -gt 768 ]; then
+  vfExpr="fps=$frameRate,scale=768:768:force_original_aspect_ratio=decrease"
+  echo "检测到原始分辨率 ${videoWidth}x${videoHeight}，将按比例缩放至最长边 768 后抽帧"
 else
   vfExpr="fps=$frameRate"
   echo "检测到原始分辨率 ${videoWidth}x${videoHeight}，无需缩放，按原尺寸抽帧"
@@ -107,11 +107,11 @@ if [ ! -f "${tmpPath}/jpgs/001.jpg" ]; then
 fi
 
 echo "正在将帧转换为 WebP 格式...,源中间文件夹：${tmpPath}/jpgs/"
-# --bgMode hybrid --greenThreshold 0.12 --greenSoftness 0.20 --greenMinRatio 0.42
+# --bgMode hybrid --greenThreshold 0.12 --greenSoftness 0.20 --greenMinRatio 0.42 --watermarkRemoval on
 if [ "$mode" == "autoChromaKey" ]; then
-  ./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 70 --bgMode ${mode:-autoChromaKey} --watermarkRemoval on
+  ./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 80 --bgMode ${mode:-autoChromaKey}
 else
-  ./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 70 --bgMode ${mode:-hybrid} --greenThreshold 0.12 --greenSoftness 0.20 --greenMinRatio 0.42 --watermarkRemoval on
+  ./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 80 --bgMode ${mode:-hybrid} --greenThreshold 0.12 --greenSoftness 0.20 --greenMinRatio 0.42
 fi
 
 if [ ! -f "${tmpPath}/webps/001.webp" ]; then

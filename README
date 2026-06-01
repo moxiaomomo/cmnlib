@@ -54,6 +54,7 @@ python ani2d_tool.py encode \
 $ bash autogen_ani2d.sh --help
 args: [-i , -o , -f] [--input=, --output=, --frameRate=]
 # 使用示例
+$ bash autogen_ani2d.sh -f=15 -m=hybrid -i=./ani2d/source/pigSleep.mp4 -o=./ani2d/output/pigSleep.a2d
 $ bash autogen_ani2d.sh -f=15 -m=hybrid -i=./ani2d/source/pigCurious.mp4 -o=./ani2d/output/pigCurious.a2d
 $ bash autogen_ani2d.sh -f=15 -m=hybrid -i=./ani2d/source/pigLooking.mp4 -o=./ani2d/output/pigLooking.a2d
 $ bash autogen_ani2d.sh -f=15 -m=vision -i=./ani2d/source/pigReading.mp4 -o=./ani2d/output/pigReading.a2d
