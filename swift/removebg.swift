@@ -783,15 +783,16 @@ func tryOptimizePNGWithPngquant(filePath: String) {
     }
 }
 
-func applyTransparentBorder(cgImage: CGImage, borderWidth: Int) -> CGImage? {
+func applyTransparentBorder(cgImage: CGImage, borderWidth: Int, borderHeight: Int) -> CGImage? {
     let width = cgImage.width
     let height = cgImage.height
     guard width > 0, height > 0 else {
         return cgImage
     }
 
-    let clampedBorder = max(0, min(borderWidth, min(width, height) / 2))
-    guard clampedBorder > 0 else {
+    let clampedBorderWidth = max(0, min(borderWidth, width / 8))
+    let clampedBorderHeight = max(0, min(borderHeight, height / 8))
+    guard clampedBorderWidth > 0 || clampedBorderHeight > 0 else {
         return cgImage
     }
 
@@ -815,10 +816,10 @@ func applyTransparentBorder(cgImage: CGImage, borderWidth: Int) -> CGImage? {
 
     context.setBlendMode(.copy)
     context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0))
-    context.fill(CGRect(x: 0, y: 0, width: width, height: clampedBorder))
-    context.fill(CGRect(x: 0, y: height - clampedBorder, width: width, height: clampedBorder))
-    context.fill(CGRect(x: 0, y: 0, width: clampedBorder, height: height))
-    context.fill(CGRect(x: width - clampedBorder, y: 0, width: clampedBorder, height: height))
+    context.fill(CGRect(x: 0, y: 0, width: width, height: clampedBorderHeight))
+    context.fill(CGRect(x: 0, y: height - clampedBorderHeight, width: width, height: clampedBorderHeight))
+    context.fill(CGRect(x: 0, y: 0, width: clampedBorderWidth, height: height))
+    context.fill(CGRect(x: width - clampedBorderWidth, y: 0, width: clampedBorderWidth, height: height))
 
     return context.makeImage()
 }
@@ -942,7 +943,7 @@ func processSingleImage(
                     try? FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
                 }
 
-                let outputImageWithBorder = applyTransparentBorder(cgImage: preprocessedCGImage, borderWidth: 15) ?? preprocessedCGImage
+                let outputImageWithBorder = applyTransparentBorder(cgImage: preprocessedCGImage, borderWidth: 10, borderHeight: 20) ?? preprocessedCGImage
 
                 guard writeImage(cgImage: outputImageWithBorder, outputPath: outputPath, format: outputFormat, webpQuality: webpQuality) else {
                     return false
@@ -993,7 +994,27 @@ func processSingleImage(
                 try? FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
             }
 
-            let outputImageWithBorder = applyTransparentBorder(cgImage: outputCGImage, borderWidth: 15) ?? outputCGImage
+            let width = outputCGImage.width
+            let height = outputCGImage.height
+            let shortSide = min(width, height)
+            let nearSquareThreshold = Int(Double(shortSide) * 0.10)
+            let isNearSquare = abs(width - height) <= nearSquareThreshold
+
+            var isCropped = false
+            let outputImageWithBorder: CGImage
+            if isNearSquare {
+                let trimHeight = Int(Double(height) * 0.15)
+                let croppedHeight = height - Int(Double(trimHeight) * 4/3)
+                if trimHeight > 0,
+                   croppedHeight > 0, 
+                   let cropped = outputCGImage.cropping(to: CGRect(x: 0, y: trimHeight, width: width, height: croppedHeight)) {
+                    outputImageWithBorder = cropped
+                    isCropped = true
+                }
+            }
+            if !isCropped {
+                outputImageWithBorder = applyTransparentBorder(cgImage: outputCGImage, borderWidth: 10, borderHeight: 20) ?? outputCGImage
+            }
 
             guard writeImage(cgImage: outputImageWithBorder, outputPath: outputPath, format: outputFormat, webpQuality: webpQuality) else {
                 return false

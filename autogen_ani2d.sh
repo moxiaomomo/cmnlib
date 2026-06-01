@@ -81,7 +81,25 @@ mkdir -p ${tmpPath}/jpgs
 mkdir -p ${tmpPath}/webps
 
 echo "正在从 $inputPath 提取帧..."
-ffmpeg -i "$inputPath" -vf fps=$frameRate -q:v 2 "${tmpPath}/jpgs/%03d.jpg"
+
+videoSize=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$inputPath")
+if [ -z "$videoSize" ]; then
+  echo "[错误] 无法读取视频分辨率: $inputPath"
+  exit 1
+fi
+
+videoWidth=${videoSize%x*}
+videoHeight=${videoSize#*x}
+
+if [ "$videoWidth" -gt 960 ] || [ "$videoHeight" -gt 960 ]; then
+  vfExpr="fps=$frameRate,scale=960:960:force_original_aspect_ratio=decrease"
+  echo "检测到原始分辨率 ${videoWidth}x${videoHeight}，将按比例缩放至最长边 960 后抽帧"
+else
+  vfExpr="fps=$frameRate"
+  echo "检测到原始分辨率 ${videoWidth}x${videoHeight}，无需缩放，按原尺寸抽帧"
+fi
+
+ffmpeg -i "$inputPath" -vf "$vfExpr" -q:v 5 "${tmpPath}/jpgs/%03d.jpg"
 
 if [ ! -f "${tmpPath}/jpgs/001.jpg" ]; then
     echo "[错误] ${tmpPath}/jpgs/001.jpg 文件不存在，可能是 ffmpeg 提取帧失败了"
@@ -91,9 +109,9 @@ fi
 echo "正在将帧转换为 WebP 格式...,源中间文件夹：${tmpPath}/jpgs/"
 # --bgMode hybrid --greenThreshold 0.12 --greenSoftness 0.20 --greenMinRatio 0.42
 if [ "$mode" == "autoChromaKey" ]; then
-  ./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 100 --bgMode ${mode:-autoChromaKey} --watermarkRemoval on
+  ./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 70 --bgMode ${mode:-autoChromaKey} --watermarkRemoval on
 else
-  ./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 100 --bgMode ${mode:-hybrid} --greenThreshold 0.12 --greenSoftness 0.20 --greenMinRatio 0.42 --watermarkRemoval on
+  ./swift/removebg 1 "${tmpPath}/jpgs/" "${tmpPath}/webps/" --outputFmt webp --webpQuality 70 --bgMode ${mode:-hybrid} --greenThreshold 0.12 --greenSoftness 0.20 --greenMinRatio 0.42 --watermarkRemoval on
 fi
 
 if [ ! -f "${tmpPath}/webps/001.webp" ]; then
