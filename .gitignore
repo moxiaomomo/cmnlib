@@ -23,6 +23,7 @@ python/media/assets/
 */tmp/
 .tmp*
 
+swift/swift/
 swift/pigJpg/
 swift/pigJpg_rmbg/
 swift/removebg

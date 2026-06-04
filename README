@@ -70,7 +70,7 @@ $ bash autogen_ani2d.sh -f=15 -m=vision -i=./ani2d/source/afterEat.mp4 -o=./ani2
 ## 识别图中物体(不识别具体物体名，只识别物体位置坐标信息)
 
 ```shell
-swift ExtraFoodList.swift ./input/food1.png
+swift ObjectDetect.swift ./input/food1.png
 ```
 
 ## ffmpeg识别固定颜色背景，并保存为rgba通道的png文件:

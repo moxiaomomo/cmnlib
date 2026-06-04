@@ -516,6 +516,19 @@ func saveAnnotatedImage(cgImage: CGImage, objects: [DetectedObject], outputPath:
 	try? pngData.write(to: outputURL)
 }
 
+func printFoodsWithName(foodCateIconObjects: [DetectedObject]) {
+	let foodEnNames: [String] = [
+		"rice","noodles","wheet","corn",
+		"greens","potato","lotus root","tomato","melon","carrot",
+		"apple","strawberry","banana","grape","orange",
+		"meat","shrimp","egg","tofu","nut",
+		"yogurt","milk","cheese","seasoning","oil"
+	]
+	for idx in 0..<foodCateIconObjects.count {
+		print("DetectedObject(objectId: \"\(foodEnNames[idx])\", objectName: \"\(foodEnNames[idx])\", x: \(foodCateIconObjects[idx].x), y: \(foodCateIconObjects[idx].y), width: \(foodCateIconObjects[idx].width), height: \(foodCateIconObjects[idx].height)),")
+	}
+}
+
 func printFoodCatesWithName(foodCateIconObjects: [DetectedObject]) {
 	let foodCateEnNames: [String] = [
 		"milk","beverages","alcoholic beverages","nuts","infant food",
@@ -534,7 +547,10 @@ func printFactsWithName(factObjects: [DetectedObject]) {
 		"vitaminC","vitaminE","thiamin","riboflavin","niacin",
 		"calcium","iron","zinc","phosphorus","potassium",
 		"sodium","magnesium","selenium","copper","manganese",
-		"iodine","sfa","usfa","mufa","pufa"
+		"iodine","sfa","usfa","mufa","pufa",
+		"water","cholesterol","beta-carotene","ash","dietary_fiber",
+		"malic_acid", "mulssifiers","sweeteners","lemon","chlorophyll",
+		"salt","sugar","calorie"
 	]
 	for idx in 0..<factObjects.count {
 		print("DetectedObject(objectId: \"\(factEnNames[idx])\", objectName: \"\(factEnNames[idx])\", x: \(factObjects[idx].x), y: \(factObjects[idx].y), width: \(factObjects[idx].width), height: \(factObjects[idx].height)),")
@@ -564,8 +580,9 @@ func main() {
 		// print("Saved JSON: \(outputPaths.jsonPath)")
 		print("Saved annotated image: \(outputPaths.annotatedPath)")
 
+		// printFoodsWithName(foodCateIconObjects: output.objects)
 		// printFoodCatesWithName(foodCateIconObjects: output.objects)
-		// ctsWithName(factObjects: output.objects)
+		printFactsWithName(factObjects: output.objects)
 	} catch {
 		fputs("Error: \(error.localizedDescription)\n", stderr)
 		exit(1)
