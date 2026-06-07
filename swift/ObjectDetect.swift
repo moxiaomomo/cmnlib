@@ -148,17 +148,19 @@ func normalizeRowAlignment(objects: [DetectedObject], rowThresholdRatio: Double 
 		let baseY = normalized[rowStart].y
 		var rowEnd = rowStart
 
+		let rowMinY = normalized[rowStart...rowEnd].map { $0.y }.min() ?? normalized[rowStart].y
+		let rowMaxHeight = normalized[rowStart...rowEnd].map { $0.height }.max() ?? normalized[rowStart].height
+
 		while rowEnd + 1 < normalized.count {
 			let nextY = normalized[rowEnd + 1].y
-			if Double(nextY - baseY) < rowThreshold {
+			//if Double(nextY - baseY) < rowThreshold {
+			if nextY<rowMinY && Double(rowMinY - nextY) < rowThreshold || 
+					nextY>=rowMinY && Double(nextY)<Double(rowMinY+rowMaxHeight) {
 				rowEnd += 1
 			} else {
 				break
 			}
 		}
-
-		let rowMinY = normalized[rowStart...rowEnd].map { $0.y }.min() ?? normalized[rowStart].y
-		let rowMaxHeight = normalized[rowStart...rowEnd].map { $0.height }.max() ?? normalized[rowStart].height
 
 		for idx in rowStart...rowEnd {
 			normalized[idx].y = rowMinY
@@ -167,11 +169,11 @@ func normalizeRowAlignment(objects: [DetectedObject], rowThresholdRatio: Double 
 
 		rowStart = rowEnd + 1
 	}
-
+	// print(normalized)
 	return normalized
 }
 
-func mergeObjectsInSameRow(objects: [DetectedObject], closeGapRatio: Double = 0.08) -> [DetectedObject] {
+func mergeObjectsInSameRow(objects: [DetectedObject], closeGapRatio: Double = 0.02) -> [DetectedObject] {
 	guard !objects.isEmpty else {
 		return objects
 	}
@@ -207,9 +209,9 @@ func mergeObjectsInSameRow(objects: [DetectedObject], closeGapRatio: Double = 0.
 				let width2 = next.width
 				let right2 = x2 + width2
 
-				let isNear = (x1 <= x2) && (right1 <= x2) && ((x2 - right1) <= closeGapThreshold)
-				let isOverlap = (x1 <= x2) && (right1 > x2) && (right1 < right2)
-				let isContain = (x1 <= x2) && (right1 >= right2)
+				let isNear = (x1 <= x2) && (right1 <= x2) && ((x2 - right1) <= closeGapThreshold) || (x1 >= x2) && (x1 <= right2) && ((x1 - right2) <= closeGapThreshold)
+				let isOverlap = (x1 <= x2) && (right1 > x2) && (right1 < right2) || (x1 >= x2) && (x1 < right2) && (right1 >= right2)
+				let isContain = (x1 <= x2) && (right1 >= right2) || (x1 >= x2) && (right1 <= right2)
 
 				guard isNear || isOverlap || isContain else {
 					break
@@ -226,7 +228,7 @@ func mergeObjectsInSameRow(objects: [DetectedObject], closeGapRatio: Double = 0.
 				} else {
 					// (3) 包含: x = x1, width = width1
 					current.x = x1
-					current.width = width1
+					current.width = width1>width2 ? width1 : width2
 				}
 
 				current.y = min(current.y, next.y)
@@ -459,7 +461,7 @@ func detectObjectsInFoodImage(imageURL: URL) throws -> DetectionOutput {
 		objects = detectByRectangles(cgImage: cgImage)
 	}
 
-	objects = normalizeRowAlignment(objects: objects)
+	objects = normalizeRowAlignment(objects: objects, rowThresholdRatio: 0.1)
 	objects = mergeObjectsInSameRow(objects: objects, closeGapRatio: 0.02)
 	objects = sortAndRenumber(objects)
 
@@ -557,6 +559,20 @@ func printFactsWithName(factObjects: [DetectedObject]) {
 	}
 }
 
+func printVehiclesWithName(vehicleObjects: [DetectedObject]) {
+	for idx in 0..<vehicleObjects.count {
+		if idx < 21 {
+			print("DetectedObject(objectId: \"car_\(idx)\", objectName: \"car\", x: \(vehicleObjects[idx].x), y: \(vehicleObjects[idx].y), width: \(vehicleObjects[idx].width), height: \(vehicleObjects[idx].height)),")
+		} else if idx < 35 {
+			print("DetectedObject(objectId: \"ship_\(idx - 21)\", objectName: \"ship\", x: \(vehicleObjects[idx].x), y: \(vehicleObjects[idx].y), width: \(vehicleObjects[idx].width), height: \(vehicleObjects[idx].height)),")
+		} else if idx < 49 {
+			print("DetectedObject(objectId: \"plane_\(idx - 35)\", objectName: \"plane\", x: \(vehicleObjects[idx].x), y: \(vehicleObjects[idx].y), width: \(vehicleObjects[idx].width), height: \(vehicleObjects[idx].height)),")
+		} else {
+			print("DetectedObject(objectId: \"satellite_\(idx - 49)\", objectName: \"satellite\", x: \(vehicleObjects[idx].x), y: \(vehicleObjects[idx].y), width: \(vehicleObjects[idx].width), height: \(vehicleObjects[idx].height)),")
+		}
+	}
+}
+
 func main() {
 	do {
 		let imageURL = try parseInputImageURL()
@@ -567,9 +583,9 @@ func main() {
 		encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 
 		let jsonData = try encoder.encode(output)
-		if let text = String(data: jsonData, encoding: .utf8) {
-			print(text)
-		}
+		// if let text = String(data: jsonData, encoding: .utf8) {
+		// 	print(text)
+		// }
 
 		try FileManager.default.createDirectory(atPath: "./swift/output", withIntermediateDirectories: true)
 		try jsonData.write(to: URL(fileURLWithPath: outputPaths.jsonPath))
@@ -582,7 +598,8 @@ func main() {
 
 		// printFoodsWithName(foodCateIconObjects: output.objects)
 		// printFoodCatesWithName(foodCateIconObjects: output.objects)
-		printFactsWithName(factObjects: output.objects)
+		// printFactsWithName(factObjects: output.objects)
+		printVehiclesWithName(vehicleObjects: output.objects)
 	} catch {
 		fputs("Error: \(error.localizedDescription)\n", stderr)
 		exit(1)
