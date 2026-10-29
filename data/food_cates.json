@@ -1,0 +1,821 @@
+[
+  {
+    "cid": 30,
+    "cname": "小麦",
+    "fcname": "谷类及制品",
+    "cname_tc": "小麥",
+    "fcname_tc": "穀類及製品",
+    "cname_en": "wheat",
+    "fcname_en": "grain"
+  },
+  {
+    "cid": 31,
+    "cname": "稻米",
+    "fcname": "谷类及制品",
+    "cname_tc": "稻米",
+    "fcname_tc": "穀類及製品",
+    "cname_en": "rice",
+    "fcname_en": "grain"
+  },
+  {
+    "cid": 32,
+    "cname": "玉米",
+    "fcname": "谷类及制品",
+    "cname_tc": "玉米",
+    "fcname_tc": "穀類及製品",
+    "cname_en": "corn",
+    "fcname_en": "grain"
+  },
+  {
+    "cid": 33,
+    "cname": "大麦",
+    "fcname": "谷类及制品",
+    "cname_tc": "大麥",
+    "fcname_tc": "穀類及製品",
+    "cname_en": "barley",
+    "fcname_en": "grain"
+  },
+  {
+    "cid": 34,
+    "cname": "小米、黄米",
+    "fcname": "谷类及制品",
+    "cname_tc": "小米、黃米",
+    "fcname_tc": "穀類及製品",
+    "cname_en": "millet, proso millet",
+    "fcname_en": "grain"
+  },
+  {
+    "cid": 35,
+    "cname": "其它",
+    "fcname": "谷类及制品",
+    "cname_tc": "其他",
+    "fcname_tc": "穀類及製品",
+    "cname_en": "other",
+    "fcname_en": "grain"
+  },
+  {
+    "cid": 36,
+    "cname": "薯类",
+    "fcname": "薯类、淀粉及制品",
+    "cname_tc": "薯類",
+    "fcname_tc": "薯類、澱粉及製品",
+    "cname_en": "tuber",
+    "fcname_en": "tubers"
+  },
+  {
+    "cid": 37,
+    "cname": "淀粉类",
+    "fcname": "薯类、淀粉及制品",
+    "cname_tc": "澱粉類",
+    "fcname_tc": "薯類、澱粉及製品",
+    "cname_en": "starch",
+    "fcname_en": "tubers"
+  },
+  {
+    "cid": 39,
+    "cname": "大豆",
+    "fcname": "干豆类及制品",
+    "cname_tc": "大豆",
+    "fcname_tc": "乾豆類及製品",
+    "cname_en": "soybean",
+    "fcname_en": "dried beans"
+  },
+  {
+    "cid": 40,
+    "cname": "绿豆",
+    "fcname": "干豆类及制品",
+    "cname_tc": "綠豆",
+    "fcname_tc": "乾豆類及製品",
+    "cname_en": "mung bean",
+    "fcname_en": "dried beans"
+  },
+  {
+    "cid": 41,
+    "cname": "赤豆",
+    "fcname": "干豆类及制品",
+    "cname_tc": "赤豆",
+    "fcname_tc": "乾豆類及製品",
+    "cname_en": "adzuki bean",
+    "fcname_en": "dried beans"
+  },
+  {
+    "cid": 42,
+    "cname": "芸豆",
+    "fcname": "干豆类及制品",
+    "cname_tc": "蕓豆",
+    "fcname_tc": "乾豆類及製品",
+    "cname_en": "kidney bean",
+    "fcname_en": "dried beans"
+  },
+  {
+    "cid": 43,
+    "cname": "蚕豆",
+    "fcname": "干豆类及制品",
+    "cname_tc": "蠶豆",
+    "fcname_tc": "乾豆類及製品",
+    "cname_en": "broad bean",
+    "fcname_en": "dried beans"
+  },
+  {
+    "cid": 44,
+    "cname": "其它",
+    "fcname": "干豆类及制品",
+    "cname_tc": "其他",
+    "fcname_tc": "乾豆類及製品",
+    "cname_en": "other",
+    "fcname_en": "dried beans"
+  },
+  {
+    "cid": 45,
+    "cname": "根菜类",
+    "fcname": "蔬菜类及制品",
+    "cname_tc": "根菜類",
+    "fcname_tc": "蔬菜類及製品",
+    "cname_en": "root vegetable",
+    "fcname_en": "vegetables"
+  },
+  {
+    "cid": 46,
+    "cname": "鲜豆类",
+    "fcname": "蔬菜类及制品",
+    "cname_tc": "鮮豆類",
+    "fcname_tc": "蔬菜類及製品",
+    "cname_en": "fresh beans",
+    "fcname_en": "vegetables"
+  },
+  {
+    "cid": 47,
+    "cname": "茄果、瓜菜类",
+    "fcname": "蔬菜类及制品",
+    "cname_tc": "茄果、瓜菜類",
+    "fcname_tc": "蔬菜類及製品",
+    "cname_en": "solanaceous fruits and cucurbits",
+    "fcname_en": "vegetables"
+  },
+  {
+    "cid": 48,
+    "cname": "葱蒜类",
+    "fcname": "蔬菜类及制品",
+    "cname_tc": "蔥蒜類",
+    "fcname_tc": "蔬菜類及製品",
+    "cname_en": "allium vegetables",
+    "fcname_en": "vegetables"
+  },
+  {
+    "cid": 49,
+    "cname": "嫩茎、叶、花菜类",
+    "fcname": "蔬菜类及制品",
+    "cname_tc": "嫩莖、葉、花菜類",
+    "fcname_tc": "蔬菜類及製品",
+    "cname_en": "stem, leaf and flower vegetables",
+    "fcname_en": "vegetables"
+  },
+  {
+    "cid": 50,
+    "cname": "水生蔬菜类",
+    "fcname": "蔬菜类及制品",
+    "cname_tc": "水生蔬菜類",
+    "fcname_tc": "蔬菜類及製品",
+    "cname_en": "aquatic vegetables",
+    "fcname_en": "vegetables"
+  },
+  {
+    "cid": 51,
+    "cname": "薯芋类",
+    "fcname": "蔬菜类及制品",
+    "cname_tc": "薯芋類",
+    "fcname_tc": "蔬菜類及製品",
+    "cname_en": "tuberous vegetables",
+    "fcname_en": "vegetables"
+  },
+  {
+    "cid": 52,
+    "cname": "野生蔬菜类",
+    "fcname": "蔬菜类及制品",
+    "cname_tc": "野生蔬菜類",
+    "fcname_tc": "蔬菜類及製品",
+    "cname_en": "wild vegetables",
+    "fcname_en": "vegetables"
+  },
+  {
+    "cid": 53,
+    "cname": "菌类",
+    "fcname": "菌藻类",
+    "cname_tc": "菌類",
+    "fcname_tc": "菌藻類",
+    "cname_en": "fungi",
+    "fcname_en": "fungi and algae"
+  },
+  {
+    "cid": 54,
+    "cname": "藻类",
+    "fcname": "菌藻类",
+    "cname_tc": "藻類",
+    "fcname_tc": "菌藻類",
+    "cname_en": "algae",
+    "fcname_en": "fungi and algae"
+  },
+  {
+    "cid": 55,
+    "cname": "仁果类",
+    "fcname": "水果类及制品",
+    "cname_tc": "仁果類",
+    "fcname_tc": "水果類及製品",
+    "cname_en": "pome fruit",
+    "fcname_en": "fruits"
+  },
+  {
+    "cid": 56,
+    "cname": "核果类",
+    "fcname": "水果类及制品",
+    "cname_tc": "核果類",
+    "fcname_tc": "水果類及製品",
+    "cname_en": "stone fruit",
+    "fcname_en": "fruits"
+  },
+  {
+    "cid": 57,
+    "cname": "浆果类",
+    "fcname": "水果类及制品",
+    "cname_tc": "漿果類",
+    "fcname_tc": "水果類及製品",
+    "cname_en": "berry",
+    "fcname_en": "fruits"
+  },
+  {
+    "cid": 58,
+    "cname": "柑橘类",
+    "fcname": "水果类及制品",
+    "cname_tc": "柑橘類",
+    "fcname_tc": "水果類及製品",
+    "cname_en": "citrus",
+    "fcname_en": "fruits"
+  },
+  {
+    "cid": 59,
+    "cname": "热带、亚热带水果",
+    "fcname": "水果类及制品",
+    "cname_tc": "熱帶、亞熱帶水果",
+    "fcname_tc": "水果類及製品",
+    "cname_en": "tropical and subtropical fruit",
+    "fcname_en": "fruits"
+  },
+  {
+    "cid": 60,
+    "cname": "瓜果类",
+    "fcname": "水果类及制品",
+    "cname_tc": "瓜果類",
+    "fcname_tc": "水果類及製品",
+    "cname_en": "melon",
+    "fcname_en": "fruits"
+  },
+  {
+    "cid": 61,
+    "cname": "树坚果",
+    "fcname": "坚果、种子类",
+    "cname_tc": "樹堅果",
+    "fcname_tc": "堅果、種子類",
+    "cname_en": "tree nut",
+    "fcname_en": "nuts"
+  },
+  {
+    "cid": 62,
+    "cname": "种子",
+    "fcname": "坚果、种子类",
+    "cname_tc": "種子",
+    "fcname_tc": "堅果、種子類",
+    "cname_en": "seed",
+    "fcname_en": "nuts"
+  },
+  {
+    "cid": 63,
+    "cname": "猪",
+    "fcname": "畜肉类及制品",
+    "cname_tc": "豬",
+    "fcname_tc": "畜肉類及製品",
+    "cname_en": "pork",
+    "fcname_en": "livestock meat"
+  },
+  {
+    "cid": 64,
+    "cname": "牛",
+    "fcname": "畜肉类及制品",
+    "cname_tc": "牛",
+    "fcname_tc": "畜肉類及製品",
+    "cname_en": "beef",
+    "fcname_en": "livestock meat"
+  },
+  {
+    "cid": 65,
+    "cname": "羊",
+    "fcname": "畜肉类及制品",
+    "cname_tc": "羊",
+    "fcname_tc": "畜肉類及製品",
+    "cname_en": "mutton",
+    "fcname_en": "livestock meat"
+  },
+  {
+    "cid": 66,
+    "cname": "驴",
+    "fcname": "畜肉类及制品",
+    "cname_tc": "驢",
+    "fcname_tc": "畜肉類及製品",
+    "cname_en": "donkey",
+    "fcname_en": "livestock meat"
+  },
+  {
+    "cid": 67,
+    "cname": "马",
+    "fcname": "畜肉类及制品",
+    "cname_tc": "馬",
+    "fcname_tc": "畜肉類及製品",
+    "cname_en": "horse",
+    "fcname_en": "livestock meat"
+  },
+  {
+    "cid": 68,
+    "cname": "其它",
+    "fcname": "畜肉类及制品",
+    "cname_tc": "其他",
+    "fcname_tc": "畜肉類及製品",
+    "cname_en": "other",
+    "fcname_en": "livestock meat"
+  },
+  {
+    "cid": 69,
+    "cname": "鸡",
+    "fcname": "禽肉类及制品",
+    "cname_tc": "雞",
+    "fcname_tc": "禽肉類及製品",
+    "cname_en": "chicken",
+    "fcname_en": "poultry meat"
+  },
+  {
+    "cid": 70,
+    "cname": "鸭",
+    "fcname": "禽肉类及制品",
+    "cname_tc": "鴨",
+    "fcname_tc": "禽肉類及製品",
+    "cname_en": "duck",
+    "fcname_en": "poultry meat"
+  },
+  {
+    "cid": 71,
+    "cname": "鹅",
+    "fcname": "禽肉类及制品",
+    "cname_tc": "鵝",
+    "fcname_tc": "禽肉類及製品",
+    "cname_en": "goose",
+    "fcname_en": "poultry meat"
+  },
+  {
+    "cid": 72,
+    "cname": "火鸡",
+    "fcname": "禽肉类及制品",
+    "cname_tc": "火雞",
+    "fcname_tc": "禽肉類及製品",
+    "cname_en": "turkey",
+    "fcname_en": "poultry meat"
+  },
+  {
+    "cid": 73,
+    "cname": "其它",
+    "fcname": "禽肉类及制品",
+    "cname_tc": "其他",
+    "fcname_tc": "禽肉類及製品",
+    "cname_en": "other",
+    "fcname_en": "poultry meat"
+  },
+  {
+    "cid": 74,
+    "cname": "液态乳",
+    "fcname": "乳类及制品",
+    "cname_tc": "液態乳",
+    "fcname_tc": "乳類及製品",
+    "cname_en": "liquid milk",
+    "fcname_en": "milk"
+  },
+  {
+    "cid": 75,
+    "cname": "奶粉",
+    "fcname": "乳类及制品",
+    "cname_tc": "奶粉",
+    "fcname_tc": "乳類及製品",
+    "cname_en": "milk powder",
+    "fcname_en": "milk"
+  },
+  {
+    "cid": 76,
+    "cname": "酸奶",
+    "fcname": "乳类及制品",
+    "cname_tc": "酸奶",
+    "fcname_tc": "乳類及製品",
+    "cname_en": "yogurt",
+    "fcname_en": "milk"
+  },
+  {
+    "cid": 77,
+    "cname": "奶酪",
+    "fcname": "乳类及制品",
+    "cname_tc": "乳酪",
+    "fcname_tc": "乳類及製品",
+    "cname_en": "cheese",
+    "fcname_en": "milk"
+  },
+  {
+    "cid": 78,
+    "cname": "奶油",
+    "fcname": "乳类及制品",
+    "cname_tc": "奶油",
+    "fcname_tc": "乳類及製品",
+    "cname_en": "butter",
+    "fcname_en": "milk"
+  },
+  {
+    "cid": 79,
+    "cname": "其它",
+    "fcname": "乳类及制品",
+    "cname_tc": "其他",
+    "fcname_tc": "乳類及製品",
+    "cname_en": "other",
+    "fcname_en": "milk"
+  },
+  {
+    "cid": 80,
+    "cname": "鸡蛋",
+    "fcname": "蛋类及制品",
+    "cname_tc": "雞蛋",
+    "fcname_tc": "蛋類及製品",
+    "cname_en": "chicken egg",
+    "fcname_en": "egg products"
+  },
+  {
+    "cid": 81,
+    "cname": "鸭蛋",
+    "fcname": "蛋类及制品",
+    "cname_tc": "鴨蛋",
+    "fcname_tc": "蛋類及製品",
+    "cname_en": "duck egg",
+    "fcname_en": "egg products"
+  },
+  {
+    "cid": 82,
+    "cname": "鹅蛋",
+    "fcname": "蛋类及制品",
+    "cname_tc": "鵝蛋",
+    "fcname_tc": "蛋類及製品",
+    "cname_en": "goose egg",
+    "fcname_en": "egg products"
+  },
+  {
+    "cid": 83,
+    "cname": "鹌鹑蛋",
+    "fcname": "蛋类及制品",
+    "cname_tc": "鵪鶉蛋",
+    "fcname_tc": "蛋類及製品",
+    "cname_en": "quail egg",
+    "fcname_en": "egg products"
+  },
+  {
+    "cid": 84,
+    "cname": "鱼",
+    "fcname": "鱼虾蟹贝类",
+    "cname_tc": "魚",
+    "fcname_tc": "魚蝦蟹貝類",
+    "cname_en": "fish",
+    "fcname_en": "seafood"
+  },
+  {
+    "cid": 85,
+    "cname": "虾",
+    "fcname": "鱼虾蟹贝类",
+    "cname_tc": "蝦",
+    "fcname_tc": "魚蝦蟹貝類",
+    "cname_en": "shrimp",
+    "fcname_en": "seafood"
+  },
+  {
+    "cid": 86,
+    "cname": "蟹",
+    "fcname": "鱼虾蟹贝类",
+    "cname_tc": "蟹",
+    "fcname_tc": "魚蝦蟹貝類",
+    "cname_en": "crab",
+    "fcname_en": "seafood"
+  },
+  {
+    "cid": 87,
+    "cname": "贝",
+    "fcname": "鱼虾蟹贝类",
+    "cname_tc": "貝",
+    "fcname_tc": "魚蝦蟹貝類",
+    "cname_en": "shellfish",
+    "fcname_en": "seafood"
+  },
+  {
+    "cid": 88,
+    "cname": "其它",
+    "fcname": "鱼虾蟹贝类",
+    "cname_tc": "其他",
+    "fcname_tc": "魚蝦蟹貝類",
+    "cname_en": "other",
+    "fcname_en": "seafood"
+  },
+  {
+    "cid": 89,
+    "cname": "婴幼儿配方粉",
+    "fcname": "婴幼儿食品",
+    "cname_tc": "嬰幼兒配方粉",
+    "fcname_tc": "嬰幼兒食品",
+    "cname_en": "infant formula",
+    "fcname_en": "infant food"
+  },
+  {
+    "cid": 90,
+    "cname": "婴幼儿断奶期辅助食品",
+    "fcname": "婴幼儿食品",
+    "cname_tc": "嬰幼兒斷奶期輔助食品",
+    "fcname_tc": "嬰幼兒食品",
+    "cname_en": "weaning supplementary food",
+    "fcname_en": "infant food"
+  },
+  {
+    "cid": 91,
+    "cname": "婴幼儿补充食品",
+    "fcname": "婴幼儿食品",
+    "cname_tc": "嬰幼兒補充食品",
+    "fcname_tc": "嬰幼兒食品",
+    "cname_en": "infant complementary food",
+    "fcname_en": "infant food"
+  },
+  {
+    "cid": 92,
+    "cname": "小吃",
+    "fcname": "小吃、甜饼",
+    "cname_tc": "小吃",
+    "fcname_tc": "小吃、甜餅",
+    "cname_en": "snack",
+    "fcname_en": "snacks and cookies"
+  },
+  {
+    "cid": 93,
+    "cname": "蛋糕、甜点",
+    "fcname": "小吃、甜饼",
+    "cname_tc": "蛋糕、甜點",
+    "fcname_tc": "小吃、甜餅",
+    "cname_en": "cake and dessert",
+    "fcname_en": "snacks and cookies"
+  },
+  {
+    "cid": 125,
+    "cname": "快餐食品",
+    "fcname": "速食食品",
+    "cname_tc": "速食食品",
+    "fcname_tc": "速食食品",
+    "cname_en": "fast food",
+    "fcname_en": "fast food"
+  },
+  {
+    "cid": 126,
+    "cname": "方便食品",
+    "fcname": "速食食品",
+    "cname_tc": "方便食品",
+    "fcname_tc": "速食食品",
+    "cname_en": "convenience food",
+    "fcname_en": "fast food"
+  },
+  {
+    "cid": 127,
+    "cname": "休闲食品",
+    "fcname": "速食食品",
+    "cname_tc": "休閒食品",
+    "fcname_tc": "速食食品",
+    "cname_en": "snack food",
+    "fcname_en": "fast food"
+  },
+  {
+    "cid": 100,
+    "cname": "碳酸饮料",
+    "fcname": "饮料类",
+    "cname_tc": "碳酸飲料",
+    "fcname_tc": "飲料類",
+    "cname_en": "carbonated beverage",
+    "fcname_en": "beverages"
+  },
+  {
+    "cid": 101,
+    "cname": "果汁及其饮料",
+    "fcname": "饮料类",
+    "cname_tc": "果汁及其飲料",
+    "fcname_tc": "飲料類",
+    "cname_en": "fruit juice and drinks",
+    "fcname_en": "beverages"
+  },
+  {
+    "cid": 102,
+    "cname": "蔬菜汁饮料",
+    "fcname": "饮料类",
+    "cname_tc": "蔬菜汁飲料",
+    "fcname_tc": "飲料類",
+    "cname_en": "vegetable juice drink",
+    "fcname_en": "beverages"
+  },
+  {
+    "cid": 103,
+    "cname": "含乳饮料",
+    "fcname": "饮料类",
+    "cname_tc": "含乳飲料",
+    "fcname_tc": "飲料類",
+    "cname_en": "milk-containing drink",
+    "fcname_en": "beverages"
+  },
+  {
+    "cid": 104,
+    "cname": "植物蛋白饮料",
+    "fcname": "饮料类",
+    "cname_tc": "植物蛋白飲料",
+    "fcname_tc": "飲料類",
+    "cname_en": "plant protein drink",
+    "fcname_en": "beverages"
+  },
+  {
+    "cid": 105,
+    "cname": "茶叶及茶饮料",
+    "fcname": "饮料类",
+    "cname_tc": "茶葉及茶飲料",
+    "fcname_tc": "飲料類",
+    "cname_en": "tea and tea beverages",
+    "fcname_en": "beverages"
+  },
+  {
+    "cid": 106,
+    "cname": "固体饮料",
+    "fcname": "饮料类",
+    "cname_tc": "固體飲料",
+    "fcname_tc": "飲料類",
+    "cname_en": "solid beverage",
+    "fcname_en": "beverages"
+  },
+  {
+    "cid": 107,
+    "cname": "棒冰、冰淇凌",
+    "fcname": "饮料类",
+    "cname_tc": "冰棒、冰淇淋",
+    "fcname_tc": "飲料類",
+    "cname_en": "popsicle, ice cream",
+    "fcname_en": "beverages"
+  },
+  {
+    "cid": 108,
+    "cname": "其它",
+    "fcname": "饮料类",
+    "cname_tc": "其他",
+    "fcname_tc": "飲料類",
+    "cname_en": "other",
+    "fcname_en": "beverages"
+  },
+  {
+    "cid": 109,
+    "cname": "发酵酒",
+    "fcname": "含酒精饮料",
+    "cname_tc": "發酵酒",
+    "fcname_tc": "含酒精飲料",
+    "cname_en": "fermented alcohol",
+    "fcname_en": "alcoholic beverages"
+  },
+  {
+    "cid": 110,
+    "cname": "蒸馏酒",
+    "fcname": "含酒精饮料",
+    "cname_tc": "蒸餾酒",
+    "fcname_tc": "含酒精飲料",
+    "cname_en": "distilled spirit",
+    "fcname_en": "alcoholic beverages"
+  },
+  {
+    "cid": 111,
+    "cname": "露酒（配制酒）",
+    "fcname": "含酒精饮料",
+    "cname_tc": "露酒（配製酒）",
+    "fcname_tc": "含酒精飲料",
+    "cname_en": "blended alcohol",
+    "fcname_en": "alcoholic beverages"
+  },
+  {
+    "cid": 112,
+    "cname": "糖",
+    "fcname": "糖、果脯和蜜饯、蜂蜜",
+    "cname_tc": "糖",
+    "fcname_tc": "糖、果脯和蜜餞、蜂蜜",
+    "cname_en": "sugar",
+    "fcname_en": "sugar"
+  },
+  {
+    "cid": 113,
+    "cname": "糖果",
+    "fcname": "糖、果脯和蜜饯、蜂蜜",
+    "cname_tc": "糖果",
+    "fcname_tc": "糖、果脯和蜜餞、蜂蜜",
+    "cname_en": "candy",
+    "fcname_en": "sugar"
+  },
+  {
+    "cid": 114,
+    "cname": "果脯和蜜饯",
+    "fcname": "糖、果脯和蜜饯、蜂蜜",
+    "cname_tc": "果脯和蜜餞",
+    "fcname_tc": "糖、果脯和蜜餞、蜂蜜",
+    "cname_en": "preserved fruit",
+    "fcname_en": "sugar"
+  },
+  {
+    "cid": 128,
+    "cname": "蜂蜜",
+    "fcname": "糖、果脯和蜜饯、蜂蜜",
+    "cname_tc": "蜂蜜",
+    "fcname_tc": "糖、果脯和蜜餞、蜂蜜",
+    "cname_en": "honey",
+    "fcname_en": "sugar"
+  },
+  {
+    "cid": 115,
+    "cname": "动物油脂",
+    "fcname": "油脂类",
+    "cname_tc": "動物油脂",
+    "fcname_tc": "油脂類",
+    "cname_en": "animal fat",
+    "fcname_en": "fats and oils"
+  },
+  {
+    "cid": 116,
+    "cname": "植物油",
+    "fcname": "油脂类",
+    "cname_tc": "植物油",
+    "fcname_tc": "油脂類",
+    "cname_en": "vegetable oil",
+    "fcname_en": "fats and oils"
+  },
+  {
+    "cid": 117,
+    "cname": "酱油",
+    "fcname": "调味品类",
+    "cname_tc": "醬油",
+    "fcname_tc": "調味品類",
+    "cname_en": "soy sauce",
+    "fcname_en": "condiments"
+  },
+  {
+    "cid": 118,
+    "cname": "醋",
+    "fcname": "调味品类",
+    "cname_tc": "醋",
+    "fcname_tc": "調味品類",
+    "cname_en": "vinegar",
+    "fcname_en": "condiments"
+  },
+  {
+    "cid": 119,
+    "cname": "酱",
+    "fcname": "调味品类",
+    "cname_tc": "醬",
+    "fcname_tc": "調味品類",
+    "cname_en": "paste",
+    "fcname_en": "condiments"
+  },
+  {
+    "cid": 120,
+    "cname": "腐乳",
+    "fcname": "调味品类",
+    "cname_tc": "腐乳",
+    "fcname_tc": "調味品類",
+    "cname_en": "fermented tofu",
+    "fcname_en": "condiments"
+  },
+  {
+    "cid": 121,
+    "cname": "咸菜类",
+    "fcname": "调味品类",
+    "cname_tc": "鹹菜類",
+    "fcname_tc": "調味品類",
+    "cname_en": "pickle",
+    "fcname_en": "condiments"
+  },
+  {
+    "cid": 122,
+    "cname": "辛香料",
+    "fcname": "调味品类",
+    "cname_tc": "辛香料",
+    "fcname_tc": "調味品類",
+    "cname_en": "spice",
+    "fcname_en": "condiments"
+  },
+  {
+    "cid": 123,
+    "cname": "盐、味精及其它",
+    "fcname": "调味品类",
+    "cname_tc": "鹽、味精及其他",
+    "fcname_tc": "調味品類",
+    "cname_en": "salt, msg and others",
+    "fcname_en": "condiments"
+  }
+]
