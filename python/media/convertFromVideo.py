@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import io
+import json
 import math
 import os
 import shutil
@@ -215,6 +216,33 @@ def _encode_svga_v2(
     return zlib.compress(bytes(movie_entity), level=9)
 
 
+def _load_vap_config(
+    vap_json_path: str,
+) -> Tuple[List[int], List[int], Optional[int]]:
+    with open(vap_json_path, "r", encoding="utf-8") as json_file:
+        config = json.load(json_file)
+    info = config.get("info") if isinstance(config, dict) else None
+    if not isinstance(info, dict):
+        raise ValueError("VAP JSON 缺少 info 配置")
+
+    regions: List[List[int]] = []
+    for key in ("rgbFrame", "aFrame"):
+        region = info.get(key)
+        if (
+            not isinstance(region, list)
+            or len(region) != 4
+            or not all(isinstance(value, (int, float)) for value in region)
+            or region[2] <= 0
+            or region[3] <= 0
+        ):
+            raise ValueError(f"VAP JSON 的 info.{key} 必须是 [x, y, w, h]")
+        regions.append([int(value) for value in region])
+
+    fps = info.get("fps")
+    json_fps = int(fps) if isinstance(fps, (int, float)) and fps >= 1 else None
+    return regions[0], regions[1], json_fps
+
+
 def convert_alpha_mp4_to_svga(
     input_path: str,
     output_path: str,
@@ -222,9 +250,19 @@ def convert_alpha_mp4_to_svga(
     keep_frames: bool = False,
     png8: bool = True,
     second_compress: bool = False,
+    vap_json_path: Optional[str] = None,
 ) -> None:
+    """Convert a side-by-side RGB/Alpha MP4, or a VAP video when
+    vap_json_path is given (its rgbFrame/aFrame regions override alpha_pos).
+    """
     if alpha_pos not in ("left", "right"):
         raise ValueError("alpha_pos 必须是 left 或 right")
+
+    rgb_region: Optional[List[int]] = None
+    alpha_region: Optional[List[int]] = None
+    vap_fps: Optional[int] = None
+    if vap_json_path:
+        rgb_region, alpha_region, vap_fps = _load_vap_config(vap_json_path)
 
     absolute_input = os.path.abspath(input_path)
     absolute_output = os.path.abspath(output_path)
@@ -237,6 +275,8 @@ def convert_alpha_mp4_to_svga(
 
     fps_value = capture.get(cv2.CAP_PROP_FPS)
     fps = max(1, round(fps_value)) if math.isfinite(fps_value) and fps_value > 0 else 30
+    if vap_fps is not None:
+        fps = vap_fps
     expected_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
     output_directory = os.path.dirname(absolute_output)
@@ -263,17 +303,31 @@ def convert_alpha_mp4_to_svga(
             if not success:
                 break
 
-            source_width = frame.shape[1]
-            split_x = source_width // 2
-            if split_x == 0:
-                raise ValueError("带通道 MP4 的宽度必须至少为 2 像素")
-
-            left_part = frame[:, :split_x]
-            right_part = frame[:, split_x:]
-            if alpha_pos == "right":
-                rgb_part, alpha_part = left_part, right_part
+            if rgb_region is not None and alpha_region is not None:
+                frame_height, frame_width = frame.shape[:2]
+                for x, y, w, h in (rgb_region, alpha_region):
+                    if x < 0 or y < 0 or x + w > frame_width or y + h > frame_height:
+                        raise ValueError("VAP JSON 的区域超出了视频画面范围")
+                rgb_part = frame[
+                    rgb_region[1] : rgb_region[1] + rgb_region[3],
+                    rgb_region[0] : rgb_region[0] + rgb_region[2],
+                ]
+                alpha_part = frame[
+                    alpha_region[1] : alpha_region[1] + alpha_region[3],
+                    alpha_region[0] : alpha_region[0] + alpha_region[2],
+                ]
             else:
-                rgb_part, alpha_part = right_part, left_part
+                source_width = frame.shape[1]
+                split_x = source_width // 2
+                if split_x == 0:
+                    raise ValueError("带通道 MP4 的宽度必须至少为 2 像素")
+
+                left_part = frame[:, :split_x]
+                right_part = frame[:, split_x:]
+                if alpha_pos == "right":
+                    rgb_part, alpha_part = left_part, right_part
+                else:
+                    rgb_part, alpha_part = right_part, left_part
 
             if rgb_part.size == 0 or alpha_part.size == 0:
                 raise ValueError("视频帧无法拆分为 RGB 和 Alpha 两部分")
@@ -344,6 +398,28 @@ def convert_alpha_mp4_to_svga(
     print("SVGA 格式: 2.0（zlib 压缩 protobuf）")
     if second_compress:
         print(f"二次压缩: {', '.join(sorted(second_compress_methods))}")
+
+
+def convert_vap_to_svga(
+    input_path: str,
+    output_path: str,
+    vap_json_path: str,
+    keep_frames: bool = False,
+    png8: bool = True,
+    second_compress: bool = False,
+) -> None:
+    """Convert a VAP video to SVGA using the rgbFrame/aFrame regions (and
+    fps, when present) from its VAP JSON config."""
+    if not vap_json_path:
+        raise ValueError("VAP 转换需要提供 VAP JSON 配置文件")
+    convert_alpha_mp4_to_svga(
+        input_path,
+        output_path,
+        keep_frames=keep_frames,
+        png8=png8,
+        second_compress=second_compress,
+        vap_json_path=vap_json_path,
+    )
 
 
 def _parse_bg_color(bg_color: str) -> Tuple[int, int, int]:
@@ -606,6 +682,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="使用 pngquant 或 Pillow 二次压缩 PNG 帧（仅在文件变小时替换）",
     )
+    parser.add_argument(
+        "--vap-json",
+        dest="vap_json",
+        help="输入是 VAP 视频时的 JSON 配置路径（使用 info.rgbFrame/aFrame 区域）",
+    )
     args = parser.parse_args(argv)
 
     converter = CONVERTERS.get((args.input_format, args.output_format))
@@ -616,7 +697,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
 
     try:
-        if args.alpha:
+        if args.vap_json:
+            convert_vap_to_svga(
+                args.input_path,
+                args.output_path,
+                args.vap_json,
+                args.keep_frames,
+                args.png8,
+                args.second_compress,
+            )
+        elif args.alpha:
             convert_alpha_mp4_to_svga(
                 args.input_path,
                 args.output_path,
