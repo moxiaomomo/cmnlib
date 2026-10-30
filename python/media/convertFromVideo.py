@@ -25,6 +25,16 @@ def _create_frame_directory() -> str:
     return tempfile.mkdtemp(prefix="convertFromVideo-frames-", dir=script_directory)
 
 
+def _parse_compression_ratio(value: str) -> float:
+    try:
+        ratio = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("压缩比例必须是 (0, 1] 范围内的数字") from error
+    if not math.isfinite(ratio) or not 0 < ratio <= 1:
+        raise argparse.ArgumentTypeError("压缩比例必须是 (0, 1] 范围内的数字")
+    return ratio
+
+
 def _quantize_png8(png_data: bytes) -> bytes:
     ffmpeg_path = shutil.which("ffmpeg")
     if ffmpeg_path is None:
@@ -64,13 +74,27 @@ def _quantize_png8(png_data: bytes) -> bytes:
     return result.stdout if len(result.stdout) < len(png_data) else png_data
 
 
-def _second_compress_png(png_data: bytes) -> Tuple[bytes, str]:
+def _second_compress_png(
+    png_data: bytes, compression_ratio: float = 0.8
+) -> Tuple[bytes, str]:
+    """Try pngquant then lossless Pillow recompression.
+
+    The ratio tunes each tool's quality/compression setting; it is not an
+    exact output-size target.
+    """
+    if not math.isfinite(compression_ratio) or not 0 < compression_ratio <= 1:
+        raise ValueError("compression_ratio 必须大于 0 且不超过 1")
+
+    compressed = png_data
+    methods: List[str] = []
     pngquant_path = shutil.which("pngquant")
     if pngquant_path is not None:
+        quality_min = round(compression_ratio * 100)
+        quality_max = min(quality_min+10, 100)
         result = subprocess.run(
             [
                 pngquant_path,
-                "--quality=65-90",
+                f"--quality={quality_min}-{quality_max}",
                 "--speed",
                 "1",
                 "--strip",
@@ -84,47 +108,62 @@ def _second_compress_png(png_data: bytes) -> Tuple[bytes, str]:
             stderr=subprocess.PIPE,
             check=False,
         )
-        if result.returncode not in (0, 98):
+        if result.returncode not in (0, 98, 99):
             error = result.stderr.decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"pngquant 二次压缩失败: {error or result.returncode}")
-        compressed = result.stdout
-        if not compressed:
-            return png_data, "pngquant（无更小结果）"
-        if not compressed.startswith(PNG_SIGNATURE):
+        pngquant_output = result.stdout
+        if pngquant_output and not pngquant_output.startswith(PNG_SIGNATURE):
             raise RuntimeError("pngquant 二次压缩未生成有效 PNG")
-        if len(compressed) < len(png_data):
-            return compressed, "pngquant"
-        return png_data, "pngquant（无更小结果）"
+        if pngquant_output and len(pngquant_output) < len(compressed):
+            compressed = pngquant_output
+            methods.append("pngquant")
     else:
-        print("pngquant 未找到，将使用 Pillow 进行二次压缩")
+        print("pngquant 未找到，将尝试使用 Pillow 进行二次压缩")
 
     try:
         from PIL import Image
     except ImportError as error:
-        raise RuntimeError(
-            "二次压缩需要安装 pngquant 或 Pillow；可运行 pip install pillow"
-        ) from error
+        if pngquant_path is None:
+            raise RuntimeError(
+                "二次压缩需要安装 pngquant 或 Pillow；可运行 pip install pillow"
+            ) from error
+        if methods:
+            return compressed, " + ".join(methods)
+        return compressed, "pngquant（无更小结果）"
 
     try:
-        with Image.open(io.BytesIO(png_data)) as image:
+        with Image.open(io.BytesIO(compressed)) as image:
             image.load()
-            original_pixels = image.convert("RGBA")
+            pixels_before_pillow = image.convert("RGBA")
             output = io.BytesIO()
-            image.save(output, format="PNG", optimize=True, compress_level=9)
-        compressed = output.getvalue()
-        if not compressed.startswith(PNG_SIGNATURE):
+            image.save(
+                output,
+                format="PNG",
+                optimize=False,
+                compress_level=round((1 - compression_ratio) * 9),
+            )
+        pillow_output = output.getvalue()
+        if not pillow_output.startswith(PNG_SIGNATURE):
             raise RuntimeError("Pillow 二次压缩未生成有效 PNG")
-        with Image.open(io.BytesIO(compressed)) as optimized_image:
-            if optimized_image.size != original_pixels.size:
+        with Image.open(io.BytesIO(pillow_output)) as optimized_image:
+            if optimized_image.size != pixels_before_pillow.size:
                 raise RuntimeError("Pillow 二次压缩改变了 PNG 尺寸")
-            if optimized_image.convert("RGBA").tobytes() != original_pixels.tobytes():
+            if (
+                optimized_image.convert("RGBA").tobytes()
+                != pixels_before_pillow.tobytes()
+            ):
                 raise RuntimeError("Pillow 二次压缩改变了 PNG 像素或透明通道")
     except OSError as error:
         raise RuntimeError(f"Pillow 二次压缩失败: {error}") from error
 
-    if len(compressed) < len(png_data):
-        return compressed, "Pillow"
-    return png_data, "Pillow（无更小结果）"
+    if len(pillow_output) < len(compressed):
+        compressed = pillow_output
+        methods.append("Pillow")
+    if methods:
+        return compressed, " + ".join(methods)
+    if pngquant_path is not None:
+        return compressed, "pngquant + Pillow（无更小结果）"
+    return compressed, "Pillow（无更小结果）"
 
 
 def _protobuf_varint(value: int) -> bytes:
@@ -251,6 +290,7 @@ def convert_alpha_mp4_to_svga(
     png8: bool = True,
     second_compress: bool = False,
     vap_json_path: Optional[str] = None,
+    compression_ratio: float = 0.8,
 ) -> None:
     """Convert a side-by-side RGB/Alpha MP4, or a VAP video when
     vap_json_path is given (its rgbFrame/aFrame regions override alpha_pos).
@@ -353,7 +393,9 @@ def convert_alpha_mp4_to_svga(
             if png8:
                 png_bytes = _quantize_png8(png_bytes)
             if second_compress:
-                png_bytes, method = _second_compress_png(png_bytes)
+                png_bytes, method = _second_compress_png(
+                    png_bytes, compression_ratio
+                )
                 second_compress_methods.add(method)
             image_name = f"frame_{frame_count:06d}"
             if frame_directory is not None:
@@ -407,6 +449,7 @@ def convert_vap_to_svga(
     keep_frames: bool = False,
     png8: bool = True,
     second_compress: bool = False,
+    compression_ratio: float = 0.8,
 ) -> None:
     """Convert a VAP video to SVGA using the rgbFrame/aFrame regions (and
     fps, when present) from its VAP JSON config."""
@@ -419,6 +462,7 @@ def convert_vap_to_svga(
         png8=png8,
         second_compress=second_compress,
         vap_json_path=vap_json_path,
+        compression_ratio=compression_ratio,
     )
 
 
@@ -456,6 +500,7 @@ def convert_mp4_to_svga(
     keep_frames: bool = False,
     png8: bool = True,
     second_compress: bool = False,
+    compression_ratio: float = 0.8,
 ) -> None:
     """Key out a solid background and encode sampled frames in SVGA 2.0.
 
@@ -571,7 +616,9 @@ def convert_mp4_to_svga(
                 if png8:
                     png_bytes = _quantize_png8(png_bytes)
                 if second_compress:
-                    png_bytes, method = _second_compress_png(png_bytes)
+                    png_bytes, method = _second_compress_png(
+                        png_bytes, compression_ratio
+                    )
                     second_compress_methods.add(method)
                 if frame_directory is not None:
                     frame_path = os.path.join(
@@ -680,7 +727,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--second-compress",
         action="store_true",
-        help="使用 pngquant 或 Pillow 二次压缩 PNG 帧（仅在文件变小时替换）",
+        help="依次尝试使用 pngquant 和 Pillow 压缩 PNG 帧（仅在文件变小时替换）",
+    )
+    parser.add_argument(
+        "--compression-ratio",
+        type=_parse_compression_ratio,
+        default=0.8,
+        help=(
+            "近似目标输出/输入大小比例（0.8 表示约为原大小的 80%），"
+            "范围为 (0, 1]；实际大小不保证一致（默认 0.8）"
+        ),
     )
     parser.add_argument(
         "--vap-json",
@@ -705,6 +761,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 args.keep_frames,
                 args.png8,
                 args.second_compress,
+                args.compression_ratio,
             )
         elif args.alpha:
             convert_alpha_mp4_to_svga(
@@ -714,6 +771,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 args.keep_frames,
                 args.png8,
                 args.second_compress,
+                compression_ratio=args.compression_ratio,
             )
         else:
             convert_mp4_to_svga(
@@ -724,6 +782,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 args.keep_frames,
                 args.png8,
                 args.second_compress,
+                args.compression_ratio,
             )
     except (OSError, ValueError, RuntimeError, cv2.error) as error:
         print(f"转换失败: {error}", file=sys.stderr)
